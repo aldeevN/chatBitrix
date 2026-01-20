@@ -31,12 +31,12 @@ class MessageBubble(QWidget):
         # Sender name for group chats
         if not self.message.is_own:
             sender_label = QLabel(self.message.sender_name)
-            sender_label.setStyleSheet("""
-                QLabel {
-                    color: #3390ec;
+            sender_label.setStyleSheet(f"""
+                QLabel {{
+                    color: {COLORS['TELEGRAM_BLUE']};
                     font-weight: 500;
                     font-size: 13px;
-                }
+                }}
             """)
             layout.addWidget(sender_label)
         
@@ -57,22 +57,22 @@ class MessageBubble(QWidget):
         footer_layout.addStretch()
         
         time_label = QLabel(self.message.time_display)
-        time_label.setStyleSheet("""
-            QLabel {
-                color: #707579;
+        time_label.setStyleSheet(f"""
+            QLabel {{
+                color: {COLORS['TEXT_SECONDARY_LIGHT']};
                 font-size: 12px;
-            }
+            }}
         """)
         footer_layout.addWidget(time_label)
         
         if self.message.is_own:
             status_icon = "✓✓" if self.message.read else "✓"
             status_label = QLabel(status_icon)
-            status_label.setStyleSheet("""
-                QLabel {
-                    color: #3390ec;
+            status_label.setStyleSheet(f"""
+                QLabel {{
+                    color: {COLORS['TELEGRAM_BLUE']};
                     font-size: 12px;
-                }
+                }}
             """)
             footer_layout.addWidget(status_label)
         
@@ -109,7 +109,7 @@ class MessageBubble(QWidget):
         size = file_info.get('size', 0)
         size_str = self.format_size(size)
         size_label = QLabel(size_str)
-        size_label.setStyleSheet("color: #707579; font-size: 12px;")
+        size_label.setStyleSheet(f"color: {COLORS['TEXT_SECONDARY_LIGHT']}; font-size: 12px;")
         file_layout.addWidget(size_label)
         
         layout.addLayout(file_layout, 1)
@@ -117,17 +117,17 @@ class MessageBubble(QWidget):
         # Download button
         download_btn = QPushButton("↓")
         download_btn.setFixedSize(30, 30)
-        download_btn.setStyleSheet("""
-            QPushButton {
+        download_btn.setStyleSheet(f"""
+            QPushButton {{
                 background-color: rgba(51, 144, 236, 0.1);
                 border: none;
                 border-radius: 15px;
-                color: #3390ec;
+                color: {COLORS['TELEGRAM_BLUE']};
                 font-weight: bold;
-            }
-            QPushButton:hover {
+            }}
+            QPushButton:hover {{
                 background-color: rgba(51, 144, 236, 0.2);
-            }
+            }}
         """)
         download_btn.clicked.connect(lambda: self.download_file(file_info))
         layout.addWidget(download_btn)
@@ -162,9 +162,11 @@ class MessageBubble(QWidget):
                         border-radius: 18px;
                         border-top-right-radius: 4px;
                         border: none;
+                        padding: 8px;
                     }}
                     QLabel {{
                         color: {COLORS['TEXT_DARK']};
+                        background-color: transparent;
                     }}
                 """)
             else:
@@ -174,9 +176,11 @@ class MessageBubble(QWidget):
                         border-radius: 18px;
                         border-top-right-radius: 4px;
                         border: none;
+                        padding: 8px;
                     }}
                     QLabel {{
                         color: {COLORS['TEXT_LIGHT']};
+                        background-color: transparent;
                     }}
                 """)
         else:
@@ -187,9 +191,11 @@ class MessageBubble(QWidget):
                         border-radius: 18px;
                         border-top-left-radius: 4px;
                         border: 1px solid {COLORS['BORDER_DARK']};
+                        padding: 8px;
                     }}
                     QLabel {{
                         color: {COLORS['TEXT_DARK']};
+                        background-color: transparent;
                     }}
                 """)
             else:
@@ -199,9 +205,11 @@ class MessageBubble(QWidget):
                         border-radius: 18px;
                         border-top-left-radius: 4px;
                         border: 1px solid {COLORS['BORDER_LIGHT']};
+                        padding: 8px;
                     }}
                     QLabel {{
                         color: {COLORS['TEXT_LIGHT']};
+                        background-color: transparent;
                     }}
                 """)
     

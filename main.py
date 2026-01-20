@@ -4,11 +4,14 @@ Uses Selenium for browser automation to capture authentication data
 """
 
 import os
+import sys
 import time
 import json
 import pickle
 from typing import Optional
 from urllib.parse import urlparse, parse_qs
+import subprocess
+from pathlib import Path
 
 # Selenium imports for browser automation
 from selenium import webdriver
@@ -42,7 +45,6 @@ class ChromeAuthApp:
     def navigate_to_login(self, url):
         """Navigate to login page"""
         self.driver.get(url)
-        time.sleep(2)
         return self.driver.current_url
     
     def watch_for_target_url(self, timeout=300, check_interval=2):
@@ -109,13 +111,13 @@ class ChromeAuthApp:
             current_url = self.driver.current_url
             
             # Check if we've left the login page
-            if "login=yes" not in current_url and "auth" not in current_url.lower():
-                print(f"\n✅ LEFT LOGIN PAGE")
+            if current_url == 'https://ugautodetal.ru/?login=yes':
+                print(f"\n✅ GET LOGIN PAGE")
                 print(f"   New URL: {current_url}")
                 
                 # Wait a bit more to ensure page is fully loaded
-                print(f"   Waiting 5 seconds for page to stabilize...")
-                time.sleep(5)
+                print(f"   Waiting 1 seconds for page to stabilize...")
+                time.sleep(1)
                 return True
             
             # Check if URL changed
@@ -312,9 +314,9 @@ class ChromeAuthApp:
         
         # Step 4: Navigate to main page if needed
         current_url = self.driver.current_url
-        if "desktop" not in current_url and "stream" not in current_url:
+        if "?login=yes" not in current_url and "?login=yes" not in current_url:
             print("\n4. Navigating to main Bitrix24 page...")
-            main_url = "https://ugautodetal.ru/stream/"
+            main_url = "https://ugautodetal.ru/getKey/"
             print(f"   Going to: {main_url}")
             self.driver.get(main_url)
             time.sleep(5)
@@ -833,6 +835,63 @@ if __name__ == "__main__":
             
             print(f"\nYou can now use this token for API calls.")
             print(f"The token has been saved to 'bitrix_token.json'")
+            
+            # Load csrf_token and site_id from saved file
+            try:
+                with open('bitrix_token.json', 'r') as f:
+                    saved_data = json.load(f)
+                    csrf_token = saved_data.get('csrf_token', '')
+                    site_id = saved_data.get('site_id', 'ap')
+            except Exception as e:
+                print(f"   ⚠️ Could not load CSRF token from file: {e}")
+                csrf_token = ''
+                site_id = 'ap'
+            
+            # Also write token to .env for the chat launcher
+            try:
+                env_path = Path(__file__).parent / '.env'
+                env_lines = []
+                if env_path.exists():
+                    with open(env_path, 'r', encoding='utf-8') as ef:
+                        env_lines = ef.read().splitlines()
+
+                # Prepare entries to ensure we don't duplicate
+                entries = {
+                    'BITRIX_REST_TOKEN': token,
+                    'BITRIX_USER_ID': str(user_id),
+                    'BITRIX_CSRF_TOKEN': csrf_token,
+                    'BITRIX_SITE_ID': site_id,
+                    'BITRIX_API_URL': 'https://ugautodetal.ru/stream/'
+                }
+
+                # Update or append entries
+                for k, v in entries.items():
+                    found = False
+                    for i, line in enumerate(env_lines):
+                        if line.startswith(k + "="):
+                            env_lines[i] = f"{k}={v}"
+                            found = True
+                            break
+                    if not found:
+                        env_lines.append(f"{k}={v}")
+
+                with open(env_path, 'w', encoding='utf-8') as ef:
+                    ef.write("\n".join(env_lines) + ("\n" if env_lines and not env_lines[-1].endswith("\n") else ""))
+                print(f"   ✓ Token and auth data written to {env_path}")
+            except Exception as e:
+                print(f"   ⚠️ Failed to write .env: {e}")
+
+            # Launch the chat UI in a separate process if launcher exists
+            try:
+                launcher = Path(__file__).parent / 'run_chat.py'
+                if launcher.exists():
+                    print("\nLaunching chat UI...")
+                    subprocess.Popen([sys.executable, str(launcher)], cwd=str(Path(__file__).parent))
+                    print("   ✓ Chat UI started (in background)")
+                else:
+                    print("   ⚠️ Chat launcher 'run_chat.py' not found; start it manually")
+            except Exception as e:
+                print(f"   ⚠️ Failed to start chat UI: {e}")
         else:
             print("\n❌ Failed to obtain API token")
             print("Please check:")

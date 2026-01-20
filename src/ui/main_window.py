@@ -67,6 +67,11 @@ class TelegramChatWindow(QMainWindow):
     
     def check_auth_data(self):
         """Check if authentication data exists, prompt if not"""
+        # Skip auth check if running from launcher with pre-loaded token
+        if os.getenv('SKIP_AUTH_CHECK') == '1':
+            print("✅ Skipping auth check (token pre-loaded from launcher)")
+            return
+            
         if not os.path.exists('.env') or not os.path.exists('auth_data_full.json'):
             print("Authentication data not found.")
             reply = QMessageBox.question(
@@ -109,10 +114,10 @@ class TelegramChatWindow(QMainWindow):
                     print(f"  Loaded env: {key}")
                     
                     # Extract API credentials from .env
-                    if key == 'API_TOKEN':
+                    if key == 'API_TOKEN' or key == 'BITRIX_REST_TOKEN':
                         auth_data['token'] = value
                         print(f"    → Token loaded: {value[:30]}...")
-                    elif key == 'API_USER_ID':
+                    elif key == 'API_USER_ID' or key == 'BITRIX_USER_ID':
                         try:
                             auth_data['user_id'] = int(value)
                             print(f"    → User ID: {value}")
@@ -135,6 +140,42 @@ class TelegramChatWindow(QMainWindow):
             except Exception as e:
                 print(f"  Error loading auth_data_full.json: {e}")
         
+        print(f"  Final auth_data: user_id={auth_data.get('user_id')}, token={'present' if auth_data.get('token') else 'MISSING'}")
+        # Additional fallbacks: check environment variables directly
+        if not auth_data.get('token'):
+            env_token = os.environ.get('BITRIX_REST_TOKEN') or os.environ.get('API_TOKEN')
+            if env_token:
+                auth_data['token'] = env_token
+                print(f"  → Token obtained from environment variable BITRIX_REST_TOKEN")
+
+        if auth_data.get('user_id') == 1:
+            env_user = os.environ.get('BITRIX_USER_ID') or os.environ.get('API_USER_ID')
+            if env_user:
+                try:
+                    auth_data['user_id'] = int(env_user)
+                    print(f"  → User ID obtained from environment variable BITRIX_USER_ID: {auth_data['user_id']}")
+                except:
+                    pass
+
+        # Final fallback: try reading bitrix_token.json saved by the auth script
+        if not auth_data.get('token') and os.path.exists('bitrix_token.json'):
+            try:
+                with open('bitrix_token.json', 'r', encoding='utf-8') as f:
+                    tdata = json.load(f)
+                token_from_file = tdata.get('token')
+                user_from_file = tdata.get('user_id')
+                if token_from_file:
+                    auth_data['token'] = token_from_file
+                    print(f"  → Token loaded from bitrix_token.json")
+                if auth_data.get('user_id') == 1 and user_from_file:
+                    try:
+                        auth_data['user_id'] = int(user_from_file)
+                        print(f"  → User ID loaded from bitrix_token.json: {auth_data['user_id']}")
+                    except:
+                        pass
+            except Exception as e:
+                print(f"  Warning: cannot read bitrix_token.json: {e}")
+
         print(f"  Final auth_data: user_id={auth_data.get('user_id')}, token={'present' if auth_data.get('token') else 'MISSING'}")
         return auth_data
     
@@ -199,24 +240,34 @@ class TelegramChatWindow(QMainWindow):
         self.chats_scroll = QScrollArea()
         self.chats_scroll.setWidgetResizable(True)
         self.chats_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.chats_scroll.setStyleSheet("""
-            QScrollArea {
+        self.chats_scroll.setStyleSheet(f"""
+            QScrollArea {{
                 border: none;
-                background-color: transparent;
-            }
-            QScrollBar:vertical {
-                background-color: transparent;
-                width: 6px;
-                border-radius: 3px;
-            }
-            QScrollBar::handle:vertical {
-                background-color: rgba(0, 0, 0, 0.2);
-                border-radius: 3px;
+                background-color: {COLORS['SIDEBAR_BG_LIGHT']};
+            }}
+            QScrollBar:vertical {{
+                background-color: {COLORS['BACKGROUND_LIGHT']};
+                width: 8px;
+                border-radius: 4px;
+                margin: 0px;
+            }}
+            QScrollBar::handle:vertical {{
+                background-color: {COLORS['BORDER_LIGHT']};
+                border-radius: 4px;
                 min-height: 30px;
-            }
-            QScrollBar::handle:vertical:hover {
-                background-color: rgba(0, 0, 0, 0.3);
-            }
+                margin: 2px 2px 2px 2px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background-color: #c0c0c0;
+            }}
+            QScrollBar::add-line:vertical {{
+                border: none;
+                background: none;
+            }}
+            QScrollBar::sub-line:vertical {{
+                border: none;
+                background: none;
+            }}
         """)
         
         self.chats_container = QWidget()
@@ -245,12 +296,12 @@ class TelegramChatWindow(QMainWindow):
         
         # Title
         title_label = QLabel("Business Chat")
-        title_label.setStyleSheet("""
-            QLabel {
+        title_label.setStyleSheet(f"""
+            QLabel {{
                 font-size: 20px;
                 font-weight: bold;
-                color: #3390ec;
-            }
+                color: {COLORS['TELEGRAM_BLUE']};
+            }}
         """)
         layout.addWidget(title_label)
         
@@ -269,17 +320,17 @@ class TelegramChatWindow(QMainWindow):
         # Menu button
         menu_btn = QPushButton("☰")
         menu_btn.setFixedSize(40, 40)
-        menu_btn.setStyleSheet("""
-            QPushButton {
+        menu_btn.setStyleSheet(f"""
+            QPushButton {{
                 background-color: transparent;
                 border: none;
                 border-radius: 20px;
                 font-size: 18px;
-                color: #3390ec;
-            }
-            QPushButton:hover {
+                color: {COLORS['TELEGRAM_BLUE']};
+            }}
+            QPushButton:hover {{
                 background-color: rgba(51, 144, 236, 0.1);
-            }
+            }}
         """)
         menu_btn.clicked.connect(self.show_menu)
         layout.addWidget(menu_btn)
@@ -311,24 +362,34 @@ class TelegramChatWindow(QMainWindow):
         self.messages_scroll = QScrollArea()
         self.messages_scroll.setWidgetResizable(True)
         self.messages_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.messages_scroll.setStyleSheet("""
-            QScrollArea {
+        self.messages_scroll.setStyleSheet(f"""
+            QScrollArea {{
                 border: none;
-                background-color: transparent;
-            }
-            QScrollBar:vertical {
-                background-color: transparent;
-                width: 6px;
-                border-radius: 3px;
-            }
-            QScrollBar::handle:vertical {
-                background-color: rgba(0, 0, 0, 0.2);
-                border-radius: 3px;
+                background-color: {COLORS['CHAT_BG_LIGHT']};
+            }}
+            QScrollBar:vertical {{
+                background-color: {COLORS['BACKGROUND_LIGHT']};
+                width: 8px;
+                border-radius: 4px;
+                margin: 0px;
+            }}
+            QScrollBar::handle:vertical {{
+                background-color: {COLORS['BORDER_LIGHT']};
+                border-radius: 4px;
                 min-height: 30px;
-            }
-            QScrollBar::handle:vertical:hover {
-                background-color: rgba(0, 0, 0, 0.3);
-            }
+                margin: 2px 2px 2px 2px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background-color: #c0c0c0;
+            }}
+            QScrollBar::add-line:vertical {{
+                border: none;
+                background: none;
+            }}
+            QScrollBar::sub-line:vertical {{
+                border: none;
+                background: none;
+            }}
         """)
         
         self.messages_container = QWidget()
@@ -364,17 +425,17 @@ class TelegramChatWindow(QMainWindow):
         # Back button (hidden by default)
         self.back_btn = QPushButton("←")
         self.back_btn.setFixedSize(40, 40)
-        self.back_btn.setStyleSheet("""
-            QPushButton {
+        self.back_btn.setStyleSheet(f"""
+            QPushButton {{
                 background-color: transparent;
                 border: none;
                 border-radius: 20px;
                 font-size: 18px;
-                color: #3390ec;
-            }
-            QPushButton:hover {
+                color: {COLORS['TELEGRAM_BLUE']};
+            }}
+            QPushButton:hover {{
                 background-color: rgba(51, 144, 236, 0.1);
-            }
+            }}
         """)
         self.back_btn.clicked.connect(self.go_back)
         self.back_btn.setVisible(False)
@@ -396,33 +457,33 @@ class TelegramChatWindow(QMainWindow):
         # Action buttons
         self.search_btn = QPushButton("🔍")
         self.search_btn.setFixedSize(40, 40)
-        self.search_btn.setStyleSheet("""
-            QPushButton {
+        self.search_btn.setStyleSheet(f"""
+            QPushButton {{
                 background-color: transparent;
                 border: none;
                 border-radius: 20px;
                 font-size: 18px;
-                color: #3390ec;
-            }
-            QPushButton:hover {
+                color: {COLORS['TELEGRAM_BLUE']};
+            }}
+            QPushButton:hover {{
                 background-color: rgba(51, 144, 236, 0.1);
-            }
+            }}
         """)
         layout.addWidget(self.search_btn)
         
         self.menu_btn = QPushButton("⋮")
         self.menu_btn.setFixedSize(40, 40)
-        self.menu_btn.setStyleSheet("""
-            QPushButton {
+        self.menu_btn.setStyleSheet(f"""
+            QPushButton {{
                 background-color: transparent;
                 border: none;
                 border-radius: 20px;
                 font-size: 18px;
-                color: #3390ec;
-            }
-            QPushButton:hover {
+                color: {COLORS['TELEGRAM_BLUE']};
+            }}
+            QPushButton:hover {{
                 background-color: rgba(51, 144, 236, 0.1);
-            }
+            }}
         """)
         self.menu_btn.clicked.connect(self.show_chat_menu)
         layout.addWidget(self.menu_btn)
@@ -446,17 +507,17 @@ class TelegramChatWindow(QMainWindow):
         # Attachment button
         attach_btn = QPushButton("📎")
         attach_btn.setFixedSize(40, 40)
-        attach_btn.setStyleSheet("""
-            QPushButton {
+        attach_btn.setStyleSheet(f"""
+            QPushButton {{
                 background-color: transparent;
                 border: none;
                 border-radius: 20px;
                 font-size: 18px;
-                color: #707579;
-            }
-            QPushButton:hover {
+                color: {COLORS['TEXT_SECONDARY_LIGHT']};
+            }}
+            QPushButton:hover {{
                 background-color: rgba(0, 0, 0, 0.1);
-            }
+            }}
         """)
         attach_btn.clicked.connect(self.attach_file)
         layout.addWidget(attach_btn)
@@ -468,21 +529,21 @@ class TelegramChatWindow(QMainWindow):
         # Send button
         self.send_btn = QPushButton("➤")
         self.send_btn.setFixedSize(40, 40)
-        self.send_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #3390ec;
+        self.send_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['TELEGRAM_BLUE']};
                 border: none;
                 border-radius: 20px;
                 font-size: 18px;
                 color: white;
                 font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #2b7bc2;
-            }
-            QPushButton:disabled {
+            }}
+            QPushButton:hover {{
+                background-color: {COLORS['TELEGRAM_BLUE_DARK']};
+            }}
+            QPushButton:disabled {{
                 background-color: #b0b0b0;
-            }
+            }}
         """)
         self.send_btn.clicked.connect(self.send_message)
         layout.addWidget(self.send_btn)
@@ -492,14 +553,14 @@ class TelegramChatWindow(QMainWindow):
     def setup_connection_indicator(self):
         """Add connection status indicator to UI"""
         self.connection_label = QLabel()
-        self.connection_label.setStyleSheet("""
-            QLabel {
-                color: #707579;
+        self.connection_label.setStyleSheet(f"""
+            QLabel {{
+                color: {COLORS['TEXT_SECONDARY_LIGHT']};
                 font-size: 12px;
                 padding: 4px 8px;
                 border-radius: 10px;
                 background-color: rgba(0, 0, 0, 0.05);
-            }
+            }}
         """)
         self.connection_label.setAlignment(Qt.AlignCenter)
         self.update_connection_status(False, "Disconnected")

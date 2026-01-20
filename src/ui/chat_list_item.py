@@ -28,15 +28,15 @@ class ChatListItem(QWidget):
         # Avatar
         avatar_label = QLabel()
         avatar_label.setFixedSize(48, 48)
-        avatar_label.setStyleSheet("""
-            QLabel {
-                background-color: #3390ec;
+        avatar_label.setStyleSheet(f"""
+            QLabel {{
+                background-color: {COLORS['TELEGRAM_BLUE']};
                 border-radius: 24px;
                 font-size: 18px;
                 font-weight: bold;
                 color: white;
                 qproperty-alignment: 'AlignCenter';
-            }
+            }}
         """)
         
         # Get first letter of chat title
@@ -74,11 +74,11 @@ class ChatListItem(QWidget):
             preview_text += f" • {group.last_message_time}"
         
         preview_label = QLabel(preview_text[:50] + ("..." if len(preview_text) > 50 else ""))
-        preview_label.setStyleSheet("""
-            QLabel {
-                color: #707579;
+        preview_label.setStyleSheet(f"""
+            QLabel {{
+                color: {COLORS['TEXT_SECONDARY_LIGHT']};
                 font-size: 13px;
-            }
+            }}
         """)
         info_layout.addWidget(preview_label)
         
@@ -91,11 +91,11 @@ class ChatListItem(QWidget):
                 dt = datetime.fromisoformat(group.date.replace('Z', '+00:00'))
                 time_str = dt.strftime("%H:%M")
                 time_label = QLabel(time_str)
-                time_label.setStyleSheet("""
-                    QLabel {
-                        color: #707579;
+                time_label.setStyleSheet(f"""
+                    QLabel {{
+                        color: {COLORS['TEXT_SECONDARY_LIGHT']};
                         font-size: 12px;
-                    }
+                    }}
                 """)
                 layout.addWidget(time_label)
             except:

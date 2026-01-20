@@ -117,7 +117,7 @@ class BitrixAPI:
         self.session.timeout = 60
         
         print(f"Initialized API with user_id: {self.user_id}")
-        print(f"API base URL: {self.base_url}/{self.user_id}/{self.token[:20]}.../<method>")
+        print(f"API base URL: {self.base_url}/{self.user_id}/{self.token[:20]}...user.current")
     
     def _get_api_url(self, method: str) -> str:
         """
