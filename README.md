@@ -17,13 +17,7 @@ That's all you need! The system will:
 
 ---
 
-## 📊 Current Status
 
-```
-Token:   ✅ eu3rd5op69723b59 (valid)
-User ID: ✅ 2611 (valid)
-Status:  ✅ READY TO CHAT
-```
 
 When you run `python3 start.py`, the chat will start immediately.
 
