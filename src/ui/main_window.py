@@ -157,6 +157,63 @@ class TelegramChatWindow(QMainWindow):
                 except:
                     pass
 
+        # Build Pull/WebSocket config from environment variables as a higher-priority source
+        # This lets the UI use websocket settings from .env without requiring auth_data_full.json
+        pull_config = {}
+        cookies = {}
+
+        # Server/websocket URLs
+        ws_url = os.environ.get('PULL_WEBSOCKET_URL') or os.environ.get('PULL_WEBSOCKET')
+        if ws_url:
+            pull_config.setdefault('server', {})
+            pull_config['server']['websocket'] = ws_url
+            pull_config['server']['websocket_secure'] = ws_url
+            pull_config['server']['hostname'] = os.environ.get('PULL_WEBSOCKET_HOSTNAME') or os.environ.get('BITRIX_HOSTNAME', '')
+            pull_config['server']['websocket_enabled'] = True
+            print(f"  → Pull websocket URL from env: {ws_url}")
+
+        # Channels (private/shared) as provided in .env
+        channels = {}
+        private_channel = os.environ.get('PULL_CHANNEL_PRIVATE') or os.environ.get('PULL_CHANNEL')
+        shared_channel = os.environ.get('PULL_CHANNEL_SHARED')
+        now_ts = int(time.time())
+        if private_channel:
+            channels['private'] = {
+                'id': private_channel,
+                'start': now_ts,
+                'end': now_ts + 43200,
+                'type': 'private'
+            }
+            print(f"  → Private Pull channel from env: {private_channel[:40]}...")
+        if shared_channel:
+            channels['shared'] = {
+                'id': shared_channel,
+                'start': now_ts,
+                'end': now_ts + 43200,
+                'type': 'shared'
+            }
+            print(f"  → Shared Pull channel from env: {shared_channel[:40]}...")
+
+        if channels:
+            pull_config['channels'] = channels
+
+        # Cookies from .env (keys starting with COOKIE_ or common cookie names)
+        for k, v in os.environ.items():
+            if k.startswith('COOKIE_'):
+                cookie_name = k[len('COOKIE_'):]
+                cookies[cookie_name] = v
+            elif k in ('PHPSESSID', 'USER_ID', 'BITRIX_SM_LOGIN', 'BITRIX_SM_UID'):
+                cookies[k] = v
+
+        if cookies:
+            print(f"  → Loaded {len(cookies)} cookies from environment")
+
+        # Attach pull config and cookies into auth_data so the Pull client can use them
+        if pull_config:
+            auth_data['pull_config'] = pull_config
+        if cookies:
+            auth_data['cookies'] = cookies
+
         # Final fallback: try reading bitrix_token.json saved by the auth script
         if not auth_data.get('token') and os.path.exists('bitrix_token.json'):
             try:
@@ -622,7 +679,72 @@ class TelegramChatWindow(QMainWindow):
         
         try:
             # Create Pull client
-            self.pull_client = BitrixPullClient(self.api, self.current_user.id, "ap")
+            # Prefer site ID from auth_info or environment
+            site_id = os.environ.get('BITRIX_SITE_ID') or self.auth_info.get('site_id', 'ap')
+            use_api_token = os.environ.get('BITRIX_USE_API_TOKEN', '0') == '1'
+
+            self.pull_client = BitrixPullClient(self.api, self.current_user.id, site_id, use_api_token)
+
+            # If we assembled pull_config/cookies from environment, inject them into the client
+            env_pull = self.auth_info.get('pull_config')
+            env_cookies = self.auth_info.get('cookies')
+            # If nothing was found earlier, attempt to build from environment now
+            if not env_pull:
+                # Build minimal pull_config from environment keys if available
+                ws_url = os.environ.get('PULL_WEBSOCKET_URL') or os.environ.get('PULL_WEBSOCKET')
+                private_channel = os.environ.get('PULL_CHANNEL_PRIVATE') or os.environ.get('PULL_CHANNEL')
+                shared_channel = os.environ.get('PULL_CHANNEL_SHARED')
+                if ws_url or private_channel or shared_channel:
+                    built = {}
+                    if ws_url:
+                        built['server'] = {
+                            'websocket': ws_url,
+                            'websocket_secure': ws_url,
+                            'hostname': os.environ.get('PULL_WEBSOCKET_HOSTNAME') or os.environ.get('BITRIX_HOSTNAME', ''),
+                            'websocket_enabled': True
+                        }
+                    ch = {}
+                    now_ts = int(time.time())
+                    if private_channel:
+                        ch['private'] = {'id': private_channel, 'start': now_ts, 'end': now_ts + 43200, 'type': 'private'}
+                    if shared_channel:
+                        ch['shared'] = {'id': shared_channel, 'start': now_ts, 'end': now_ts + 43200, 'type': 'shared'}
+                    if ch:
+                        built['channels'] = ch
+                    env_pull = built
+                    print("Built Pull config from environment in initialize_pull_client")
+            if not env_cookies:
+                # collect cookies from env as fallback
+                built_cookies = {}
+                for k, v in os.environ.items():
+                    if k.startswith('COOKIE_'):
+                        built_cookies[k[len('COOKIE_'):]] = v
+                    elif k in ('PHPSESSID', 'USER_ID', 'BITRIX_SM_LOGIN', 'BITRIX_SM_UID'):
+                        built_cookies[k] = v
+                if built_cookies:
+                    env_cookies = built_cookies
+                    print(f"Built cookies from environment in initialize_pull_client ({len(env_cookies)})")
+            if env_pull or env_cookies:
+                # Overwrite client's auth_data/pull_config/cookies with env-provided values
+                try:
+                    if env_pull:
+                        self.pull_client.auth_data = self.pull_client.auth_data or {}
+                        self.pull_client.auth_data['pull_config'] = env_pull
+                        self.pull_client.pull_config = env_pull
+                        self.pull_client.config = env_pull
+                        print("Injected Pull configuration from environment into Pull client")
+                    if env_cookies:
+                        self.pull_client.auth_data = self.pull_client.auth_data or {}
+                        self.pull_client.auth_data['cookies'] = env_cookies
+                        self.pull_client.cookies = env_cookies
+                        # Rebuild cookie header
+                        try:
+                            self.pull_client.cookie_header = self.pull_client.build_cookie_header()
+                        except Exception:
+                            pass
+                        print("Injected cookies from environment into Pull client")
+                except Exception as e:
+                    print(f"Warning: failed to inject env Pull config into client: {e}")
             
             # Connect signals
             self.pull_client.message_received.connect(self.handle_pull_message)
