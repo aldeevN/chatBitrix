@@ -5,6 +5,7 @@ Main window for Telegram-like Bitrix24 Chat
 import os
 import sys
 import json
+import time
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -429,7 +430,7 @@ class TelegramChatWindow(QMainWindow):
         return header
     
     def create_input_area(self) -> QWidget:
-        """Setup message input area with typing indicator"""
+        """Setup message input area"""
         input_widget = QWidget()
         input_widget.setFixedHeight(80)
         input_widget.setStyleSheet(f"""
@@ -460,12 +461,8 @@ class TelegramChatWindow(QMainWindow):
         attach_btn.clicked.connect(self.attach_file)
         layout.addWidget(attach_btn)
         
-        # Message input with typing detection
+        # Message input
         self.message_input = TelegramInput()
-        self.message_input.textChanged.connect(self.on_text_changed)
-        self.typing_timer = QTimer(self)
-        self.typing_timer.setSingleShot(True)
-        self.typing_timer.timeout.connect(self.stop_typing_indicator)
         layout.addWidget(self.message_input, 1)
         
         # Send button
@@ -536,20 +533,6 @@ class TelegramChatWindow(QMainWindow):
         status_bar = self.statusBar()
         if self.connection_label not in status_bar.children():
             status_bar.addPermanentWidget(self.connection_label)
-    
-    def on_text_changed(self):
-        """Handle text changes for typing indicators"""
-        if self.current_group and self.pull_client and self.pull_client.is_authenticated:
-            # Start or restart typing timer
-            self.typing_timer.start(2000)  # 2 seconds
-            
-            # Send typing indicator via Pull client
-            self.pull_client.send_typing(self.current_group.id, True)
-    
-    def stop_typing_indicator(self):
-        """Stop typing indicator when user stops typing"""
-        if self.current_group and self.pull_client and self.pull_client.is_authenticated:
-            self.pull_client.send_typing(self.current_group.id, False)
     
     def initialize_data(self):
         """Initialize all data including WebSocket"""
@@ -938,68 +921,12 @@ class TelegramChatWindow(QMainWindow):
         
         print(f"Sending message to group {self.current_group.id}")
         
-        # Stop typing indicator
-        self.stop_typing_indicator()
-        
-        # Try Pull client first
-        if self.send_message_via_pull(text):
-            # If successful, add message locally immediately
-            new_msg = Message(
-                id=len(self.messages) + 1,
-                text=text,
-                sender_id=self.current_user.id,
-                sender_name=self.current_user.display_name,
-                timestamp=datetime.now().isoformat(),
-                files=[],
-                is_own=True,
-                read=False
-            )
+        # Try to send via HTTP API first
+        try:
+            data = self.api.add_message(self.current_group, text)
             
-            self.messages.append(new_msg)
-            self.update_messages_display()
-            self.message_input.clear()
-            
-            # Update group info
-            self.current_group.last_message = text[:50] + ("..." if len(text) > 50 else "")
-            self.current_group.last_message_time = "just now"
-            self.update_chat_list()
-            
-            return
-        
-        # Fallback to HTTP API
-        data = self.api.add_message(self.current_group, text)
-        
-        if data and not data.get("error"):
-            new_msg = Message(
-                id=len(self.messages) + 1,
-                text=text,
-                sender_id=self.current_user.id,
-                sender_name=self.current_user.display_name,
-                timestamp=datetime.now().isoformat(),
-                files=[],
-                is_own=True,
-                read=True
-            )
-            
-            self.messages.append(new_msg)
-            self.update_messages_display()
-            self.message_input.clear()
-            
-            # Update group info
-            self.current_group.last_message = text[:50] + ("..." if len(text) > 50 else "")
-            self.current_group.last_message_time = "just now"
-            self.update_chat_list()
-        else:
-            # Demo mode fallback
-            reply = QMessageBox.question(
-                self,
-                "Demo Mode",
-                "Failed to send message via API.\nAdd message locally for demo?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.Yes
-            )
-            
-            if reply == QMessageBox.Yes:
+            if data and not data.get("error"):
+                # Create new message object
                 new_msg = Message(
                     id=len(self.messages) + 1,
                     text=text,
@@ -1007,47 +934,98 @@ class TelegramChatWindow(QMainWindow):
                     sender_name=self.current_user.display_name,
                     timestamp=datetime.now().isoformat(),
                     files=[],
-                    is_own=True
+                    is_own=True,
+                    read=True
                 )
                 
+                # Add to messages list
                 self.messages.append(new_msg)
+                
+                # Update UI
                 self.update_messages_display()
                 self.message_input.clear()
+                
+                # Update group info
+                self.current_group.last_message = text[:50] + ("..." if len(text) > 50 else "")
+                self.current_group.last_message_time = "just now"
+                self.update_chat_list()
+                
+                # Show success message
+                self.statusBar().showMessage("✓ Message sent successfully", 3000)
+                
+                # Try to also send via Pull client if available (for real-time updates)
+                if self.pull_client and self.pull_client.is_authenticated:
+                    try:
+                        # Send via Pull client for real-time propagation
+                        if hasattr(self.pull_client, 'ws') and self.pull_client.ws:
+                            pull_message = {
+                                "jsonrpc": "2.0",
+                                "method": "publish",
+                                "params": {
+                                    "channelList": [str(self.current_group.id)],
+                                    "body": {
+                                        "module_id": "uad.shop.chat",
+                                        "command": "newMessage",
+                                        "params": {
+                                            "author": self.current_user.display_name,
+                                            "message": text,
+                                            "timestamp": int(time.time() * 1000)
+                                        }
+                                    }
+                                },
+                                "id": self.pull_client.get_next_rpc_id() if hasattr(self.pull_client, 'get_next_rpc_id') else 1
+                            }
+                            self.pull_client.ws.send(json.dumps(pull_message))
+                            print("✓ Message also sent via Pull client")
+                    except Exception as pull_error:
+                        print(f"Note: Could not send via Pull client: {pull_error}")
+                
+            else:
+                # If API returns error, fall back to demo mode
+                error_msg = data.get("error_description", "Unknown error") if isinstance(data, dict) else "Unknown error"
+                print(f"API error: {error_msg}")
+                self.send_demo_message(text)
+                
+        except Exception as e:
+            print(f"Error sending via HTTP API: {e}")
+            self.send_demo_message(text)
     
-    def send_message_via_pull(self, text: str):
-        """Try to send message via Pull client"""
-        if self.current_group and self.pull_client and self.pull_client.is_authenticated:
-            # Create group info for the message
-            group_info = {
-                "id": str(self.current_group.id),
-                "touch": datetime.now().strftime("%H:%M"),
-                "author_name": self.current_user.display_name,
-                "title": self.current_group.title or "",
-                "importance": "normal",
-                "isActive": False,
-                "members": [],
-                "managersCount": 0,
-                "customersCount": 0,
-                "meta": {"pinned": "false"},
-                "notifications": 0,
-                "type": self.current_group.type,
-                "author": str(self.current_user.id),
-                "date": datetime.now().isoformat(),
-                "props": json.dumps({
-                    "touch": datetime.now().strftime("%d.%m.%y %H:%M:%S"),
-                    "author_name": self.current_user.display_name,
-                    "title": self.current_group.title or "",
-                    "importance": "normal"
-                }),
-                "state": None,
-                "site": self.current_group.site
-            }
-            
-            if self.pull_client.send_message(self.current_group.id, text, group_info=group_info):
-                print("Message sent via Pull client")
-                return True
+    def send_demo_message(self, text: str):
+        """Send message in demo mode (fallback)"""
+        reply = QMessageBox.question(
+            self,
+            "Demo Mode",
+            "Failed to send message via API.\nAdd message locally for demo?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes
+        )
         
-        return False
+        if reply == QMessageBox.Yes:
+            # Create demo message
+            new_msg = Message(
+                id=len(self.messages) + 1,
+                text=text,
+                sender_id=self.current_user.id,
+                sender_name=self.current_user.display_name,
+                timestamp=datetime.now().isoformat(),
+                files=[],
+                is_own=True
+            )
+            
+            # Add to messages
+            self.messages.append(new_msg)
+            
+            # Update UI
+            self.update_messages_display()
+            self.message_input.clear()
+            
+            # Update group info
+            self.current_group.last_message = text[:50] + ("..." if len(text) > 50 else "")
+            self.current_group.last_message_time = "just now"
+            self.update_chat_list()
+            
+            # Show info message
+            self.statusBar().showMessage("Message added locally (demo mode)", 3000)
     
     def attach_file(self):
         file_paths, _ = QFileDialog.getOpenFileNames(
@@ -1234,7 +1212,8 @@ class TelegramChatWindow(QMainWindow):
         elif message_type == 'im.message':
             self.handle_im_message(data.get('params', {}))
         elif message_type == 'im.typing':
-            self.handle_typing_indicator(data.get('params', {}))
+            # Typing indicator disabled
+            pass
         elif message_type == 'im.read':
             self.handle_read_receipt(data.get('params', {}))
         elif message_type == 'im.chat_update':
@@ -1390,43 +1369,6 @@ class TelegramChatWindow(QMainWindow):
             return self.current_user.display_name
         
         return f"User {user_id}"
-    
-    def handle_typing_indicator(self, params: dict):
-        """Handle typing indicators"""
-        chat_id = params.get('chat_id')
-        user_id = params.get('user_id')
-        is_typing = params.get('typing', False)
-        
-        if not chat_id or not user_id:
-            return
-        
-        if self.current_group and self.current_group.id == int(chat_id):
-            # Don't show typing indicator for self
-            if int(user_id) == self.current_user.id:
-                return
-            
-            # Find user name
-            typing_user = self.get_user_name(int(user_id))
-            
-            # Update typing indicator in chat title
-            if typing_user and is_typing:
-                self.chat_title.setText(
-                    f"{self.current_group.display_title(self.current_user, self.customers)} "
-                    f"({typing_user} is typing...)"
-                )
-                self.typing_indicator_timer = QTimer(self)
-                self.typing_indicator_timer.setSingleShot(True)
-                self.typing_indicator_timer.timeout.connect(self.clear_typing_indicator)
-                self.typing_indicator_timer.start(2000)  # Clear after 2 seconds
-            elif not is_typing:
-                self.clear_typing_indicator()
-    
-    def clear_typing_indicator(self):
-        """Clear typing indicator from chat title"""
-        if self.current_group:
-            self.chat_title.setText(
-                self.current_group.display_title(self.current_user, self.customers)
-            )
     
     def handle_read_receipt(self, params: dict):
         """Handle message read receipts"""
@@ -1589,11 +1531,5 @@ class TelegramChatWindow(QMainWindow):
         # Stop timers
         if hasattr(self, 'update_timer'):
             self.update_timer.stop()
-        
-        if hasattr(self, 'typing_timer'):
-            self.typing_timer.stop()
-        
-        if hasattr(self, 'typing_indicator_timer'):
-            self.typing_indicator_timer.stop()
         
         event.accept()

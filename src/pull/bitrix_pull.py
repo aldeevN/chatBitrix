@@ -1,7 +1,3 @@
-"""
-Bitrix Pull client for WebSocket communication using captured authentication
-"""
-
 import os
 import json
 import time
@@ -12,15 +8,19 @@ import urllib.parse
 import threading
 from datetime import datetime
 from typing import Dict, List, Optional, Callable, Any
+import struct
+import base64
+import urllib3
+import certifi
 
 try:
     import websocket
-    from websocket import WebSocketApp
+    from websocket import WebSocketApp, WebSocketException
 except ImportError:
     import subprocess
     subprocess.check_call(["pip", "install", "websocket-client"])
     import websocket
-    from websocket import WebSocketApp
+    from websocket import WebSocketApp, WebSocketException
 
 from PyQt5.QtCore import QThread, pyqtSignal, QTimer
 
@@ -29,26 +29,29 @@ from .pull_constants import (
     PullStatus, CloseReasons, ConnectionType, SenderType
 )
 
+
 class BitrixPullClient(QThread):
-    """Enhanced Bitrix Pull client using captured authentication data"""
+    """Enhanced Bitrix Pull client for binary WebSocket communication"""
     message_received = pyqtSignal(dict)
     connection_status = pyqtSignal(bool, str)
     debug_info = pyqtSignal(str)
+    raw_message_received = pyqtSignal(str)  # New: for raw message debugging
     
     def __init__(self, api, user_id: int, site_id: str = "ap", use_api_token: bool = False):
         super().__init__()
         self.api = api
         self.user_id = user_id
         self.site_id = site_id
-        self.use_api_token = use_api_token  # Новый параметр
-        self.api_token = None
+        self.use_api_token = use_api_token
         
         # Load captured authentication data
         self.auth_data = self.load_auth_data()
         self.pull_config = self.auth_data.get('pull_config', {})
         self.cookies = self.auth_data.get('cookies', {})
         
-        print(f"Initializing Pull client for user {user_id} with {len(self.cookies)} cookies")
+        print(f"=== Initializing Bitrix Pull client for user {user_id} ===")
+        print(f"✓ Site ID: {site_id}")
+        print(f"✓ Use API Token: {use_api_token}")
         
         # Connection state
         self.ws = None
@@ -79,11 +82,11 @@ class BitrixPullClient(QThread):
         self.connection_type = ConnectionType.WebSocket
         self.unloading = False
         
-        # Cache for configuration
-        self.server_time = None
-        self.server_time_offset = 0
+        # Binary communication
+        self.binary_mode = True
+        self.message_buffer = bytearray()
         
-        # Message counter for JSON-RPC
+        # Message counter
         self.rpc_id_counter = 0
         self.rpc_response_awaiters = {}
         
@@ -103,23 +106,63 @@ class BitrixPullClient(QThread):
             'mid': 0,
             'lastMessageIds': []
         }
+        
+        # Cookie header
+        self.cookie_header = self.build_cookie_header()
+        
+        # Statistics
+        self.message_count = 0
+        self.bytes_received = 0
+        self.bytes_sent = 0
+        self.connection_start_time = None
+        self.last_message_time = None
+        
+        print(f"=== Pull client initialized ===")
     
     def load_auth_data(self):
         """Load authentication data from captured files"""
+        print("\n" + "="*60)
+        print("Loading authentication data...")
+        print("="*60)
+        
         try:
             # Try to load from auth_data_full.json first
             if os.path.exists('auth_data_full.json'):
                 with open('auth_data_full.json', 'r', encoding='utf-8') as f:
                     auth_data = json.load(f)
                 
+                print(f"✓ Loaded auth_data_full.json ({len(auth_data)} items)")
+                
                 # Extract Pull configuration
                 local_storage = auth_data.get('local_storage', {})
+                print(f"✓ Local storage items: {len(local_storage)}")
                 
-                # Find Pull config key (pattern: bx-pull-{user_id}-{site_id}-bx-pull-config)
+                # Find Pull config key
+                pull_config_found = False
                 for key in local_storage.keys():
                     if 'bx-pull' in key and 'config' in key:
                         try:
                             pull_config = json.loads(local_storage[key])
+                            print(f"✓ Found Pull config in key: {key}")
+                            print(f"  Pull config keys: {list(pull_config.keys())}")
+                            
+                            # Debug server config
+                            if 'server' in pull_config:
+                                server = pull_config['server']
+                                print(f"  Server config:")
+                                print(f"    WebSocket: {server.get('websocket')}")
+                                print(f"    WebSocket Secure: {server.get('websocket_secure')}")
+                                print(f"    Hostname: {server.get('hostname')}")
+                            
+                            # Debug channels
+                            if 'channels' in pull_config:
+                                channels = pull_config['channels']
+                                print(f"  Channels: {list(channels.keys())}")
+                                for chan_type, chan_info in channels.items():
+                                    if chan_info:
+                                        print(f"    {chan_type}: ID={chan_info.get('id', 'N/A')[:30]}...")
+                            
+                            pull_config_found = True
                             return {
                                 'user_id': self.user_id,
                                 'pull_config': pull_config,
@@ -127,26 +170,36 @@ class BitrixPullClient(QThread):
                                 'local_storage': local_storage,
                                 'session_storage': auth_data.get('session_storage', {})
                             }
-                        except json.JSONDecodeError:
+                        except json.JSONDecodeError as e:
+                            print(f"✗ Error parsing Pull config: {e}")
                             continue
                 
+                if not pull_config_found:
+                    print("⚠ No Pull config found in local storage")
+                    print("Available keys with 'bx-pull':")
+                    for key in local_storage.keys():
+                        if 'bx-pull' in key:
+                            print(f"  - {key}")
+                
                 # If no config found, try to create minimal config
-                print("Creating minimal Pull configuration from auth data...")
+                print("\nCreating minimal Pull configuration from auth data...")
                 
                 # Extract important cookies for authentication
                 cookies = auth_data.get('cookies', {})
-                important_cookies = [
-                    f"{k}={v}" for k, v in cookies.items()
-                    if 'bitrix' in k.lower() or 'phpsessid' in k.lower()
-                ]
+                print(f"✓ Cookies available: {len(cookies)}")
+                print("Important cookies:")
+                for cookie_name in cookies.keys():
+                    if any(keyword in cookie_name.lower() for keyword in 
+                          ['bitrix_', 'phpsessid', 'sid_', 'bx_user_id', 'login_hash']):
+                        print(f"  - {cookie_name}")
                 
                 # Create minimal config
                 server_config = {
-                    'websocket': 'ws://ugautodetal.ru/bitrix/subws/',
+                    'websocket': 'wss://ugautodetal.ru/bitrix/subws/',
                     'websocket_secure': 'wss://ugautodetal.ru/bitrix/subws/',
                     'long_polling': 'http://ugautodetal.ru/bitrix/sub/',
                     'long_pooling_secure': 'https://ugautodetal.ru/bitrix/sub/',
-                    'publish': 'http://ugautodetal.ru/bitrix/rest/',
+                    'publish': 'https://ugautodetal.ru/bitrix/rest/',
                     'publish_secure': 'https://ugautodetal.ru/bitrix/rest/',
                     'hostname': 'www.ugavtopart.ru',
                     'websocket_enabled': True
@@ -163,7 +216,7 @@ class BitrixPullClient(QThread):
                         'private': {
                             'id': channel_id,
                             'start': timestamp,
-                            'end': timestamp + 43200,  # 12 hours
+                            'end': timestamp + 43200,
                             'type': 'private'
                         }
                     },
@@ -173,6 +226,8 @@ class BitrixPullClient(QThread):
                     }
                 }
                 
+                print(f"✓ Created minimal Pull config with channel ID: {channel_id[:30]}...")
+                
                 return {
                     'user_id': self.user_id,
                     'pull_config': pull_config,
@@ -180,26 +235,58 @@ class BitrixPullClient(QThread):
                     'local_storage': local_storage,
                     'session_storage': auth_data.get('session_storage', {})
                 }
+            else:
+                print("✗ auth_data_full.json not found")
             
             return {}
             
         except Exception as e:
-            print(f"Error loading auth data: {e}")
+            print(f"✗ Error loading auth data: {e}")
+            import traceback
+            traceback.print_exc()
             return {}
+    
+    def build_cookie_header(self):
+        """Build Cookie header from captured cookies"""
+        print("\n" + "="*60)
+        print("Building Cookie header...")
+        print("="*60)
+        
+        cookie_parts = []
+        
+        for cookie_name, cookie_value in self.cookies.items():
+            # Include important Bitrix cookies
+            if any(keyword in cookie_name.lower() for keyword in 
+                  ['bitrix_', 'phpsessid', 'sid_', 'bx_user_id', 'login_hash']):
+                cookie_parts.append(f"{cookie_name}={cookie_value}")
+                print(f"✓ Adding cookie: {cookie_name} ({len(str(cookie_value))} chars)")
+        
+        if cookie_parts:
+            header = f"Cookie: {'; '.join(cookie_parts)}"
+            print(f"✓ Cookie header length: {len(header)} characters")
+            return header
+        
+        print("⚠ No important cookies found")
+        return ""
     
     def get_or_create_api_token(self):
         """Get or create API token for authentication"""
+        print("\n" + "="*60)
+        print("Getting API token...")
+        print("="*60)
+        
         try:
-            # Сначала пытаемся получить существующий токен
+            # Try to get existing token
             result = self.api.get_token_api()
             
             if result and not result.get("error"):
                 self.api_token = result.get("result", {}).get("token")
                 if self.api_token:
-                    print(f"✓ Using existing API token")
+                    print(f"✓ Using existing API token (length: {len(self.api_token)})")
+                    print(f"Token preview: {self.api_token[:30]}...")
                     return self.api_token
             
-            # Если токена нет, создаем новый
+            # Create new token
             print("Creating new API token...")
             result = self.api.create_token_api(
                 name=f"Python Bitrix Pull Client - {datetime.now().strftime('%Y-%m-%d')}",
@@ -209,34 +296,54 @@ class BitrixPullClient(QThread):
             if result and not result.get("error"):
                 self.api_token = result.get("result", {}).get("token")
                 if self.api_token:
-                    print(f"✓ Created new API token")
+                    print(f"✓ Created new API token (length: {len(self.api_token)})")
+                    print(f"Token preview: {self.api_token[:30]}...")
                     return self.api_token
             
             print("✗ Failed to get or create API token")
             return None
             
         except Exception as e:
-            print(f"Error getting API token: {e}")
+            print(f"✗ Error getting API token: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def load_config(self):
         """Load configuration"""
+        print("\n" + "="*60)
         print("Loading configuration...")
+        print("="*60)
         
         # Use captured pull config if available
         if self.pull_config:
             self.config = self.pull_config
+            print("✓ Using captured Pull configuration")
             
             # Extract channel IDs
             channels = self.config.get('channels', {})
             if 'private' in channels:
                 self.channel_id = channels['private']['id']
+                print(f"✓ Using private channel: {self.channel_id[:50]}...")
             elif 'shared' in channels:
                 self.channel_id = channels['shared']['id']
+                print(f"✓ Using shared channel: {self.channel_id[:50]}...")
+            else:
+                print("⚠ No channels found in config")
             
-            print(f"✓ Using captured Pull configuration")
-            if self.channel_id:
-                print(f"✓ Channel ID: {self.channel_id[:50]}...")
+            # Print server info
+            server_config = self.config.get('server', {})
+            print(f"✓ Server config:")
+            print(f"  WebSocket Secure: {server_config.get('websocket_secure', 'N/A')}")
+            print(f"  WebSocket: {server_config.get('websocket', 'N/A')}")
+            print(f"  Hostname: {server_config.get('hostname', 'N/A')}")
+            print(f"  WebSocket Enabled: {server_config.get('websocket_enabled', 'N/A')}")
+            
+            # Print API info
+            api_config = self.config.get('api', {})
+            print(f"✓ API info:")
+            print(f"  Revision Web: {api_config.get('revision_web', 'N/A')}")
+            print(f"  Revision Mobile: {api_config.get('revision_mobile', 'N/A')}")
             
             return True
         
@@ -252,6 +359,7 @@ class BitrixPullClient(QThread):
     def start_client(self):
         """Start the Pull client"""
         if self.running:
+            print("⚠ Client already running")
             return
         
         self.running = True
@@ -259,27 +367,29 @@ class BitrixPullClient(QThread):
         
         # Load configuration
         if not self.load_config():
-            self.log("Failed to load config, will try during connect")
+            self.log("Failed to load config")
+            return
         
         # Get API token if needed
         if self.use_api_token:
             self.api_token = self.get_or_create_api_token()
             if not self.api_token:
-                self.log("Failed to get API token, falling back to cookies")
+                self.log("Failed to get API token, using cookies only")
                 self.use_api_token = False
         
         # Start connection
         self.connect()
     
     def connect(self):
-        """Connect to WebSocket server using captured authentication"""
+        """Connect to WebSocket server"""
         if self.ws:
             self.disconnect()
         
         try:
             # Ensure we have config
             if not self.config:
-                self.load_config()
+                self.log("No config available")
+                return
             
             # Build WebSocket URL with authentication
             ws_url = self.build_websocket_url()
@@ -288,53 +398,101 @@ class BitrixPullClient(QThread):
                 self.schedule_reconnect()
                 return
             
-            self.log(f"Connecting to: {ws_url[:100]}...")
+            print("\n" + "="*60)
+            print("Connecting to WebSocket...")
+            print("="*60)
+            print(f"URL: {ws_url[:100]}...")
             
             self.status = PullStatus.Connecting
             self.connection_status.emit(False, "Connecting...")
             
-            # Create WebSocket connection
+            # Build headers
+            headers = [
+                "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                f"X-Bitrix-User-Id: {self.user_id}",
+                "Accept-Encoding: gzip, deflate, br",
+                "Accept-Language: ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Origin: https://ugautodetal.ru",
+                "Sec-WebSocket-Protocol: binary",
+                "Pragma: no-cache",
+                "Cache-Control: no-cache"
+            ]
+            
+            # Add Cookie header if available
+            if self.cookie_header:
+                headers.append(self.cookie_header)
+                print(f"✓ Added Cookie header ({len(self.cookie_header)} chars)")
+            
+            # Add API token if using
+            if self.use_api_token and self.api_token:
+                headers.append(f"Authorization: Bearer {self.api_token}")
+                print(f"✓ Added Authorization header")
+            
+            print(f"Headers ({len(headers)}):")
+            for header in headers:
+                print(f"  {header[:80]}...")
+            
+            # Create WebSocket connection with disabled Origin check
             self.ws = WebSocketApp(
                 ws_url,
                 on_message=self.on_message,
                 on_error=self.on_error,
                 on_close=self.on_close,
                 on_open=self.on_open,
-                header=[
-                    "User-Agent: Python-Bitrix-Pull-Client/1.0",
-                    f"X-Bitrix-User-Id: {self.user_id}",
-                    "Accept-Encoding: gzip, deflate, br"
-                ]
+                header=headers
             )
             
             # Start WebSocket in background thread
-            ws_thread = threading.Thread(target=self.run_websocket, daemon=True)
+            ws_thread = threading.Thread(
+                target=self.run_websocket,
+                name=f"BitrixWebSocket-{self.user_id}",
+                daemon=True
+            )
             ws_thread.start()
             
         except Exception as e:
             self.log(f"Error connecting: {e}")
+            import traceback
+            traceback.print_exc()
             self.schedule_reconnect()
     
     def build_websocket_url(self) -> str:
-        """Build WebSocket URL with authentication"""
+        """Build WebSocket URL"""
         if not self.config:
-            self.config = self.load_config()
+            self.load_config()
+            if not self.config:
+                return None
         
         # Get WebSocket URL from config
         server_config = self.config.get('server', {})
-        websocket_url = server_config.get('websocket_secure', 
-                         server_config.get('websocket', 
-                         'wss://ugautodetal.ru/bitrix/subws/'))
         
-        # Get channel ID
-        channels = self.config.get('channels', {})
-        if 'private' in channels:
-            self.channel_id = channels['private']['id']
-        elif 'shared' in channels:
-            self.channel_id = channels['shared']['id']
-        else:
-            # Generate channel ID
-            self.channel_id = f"private-{self.user_id}"
+        # Prefer secure WebSocket
+        websocket_url = server_config.get('websocket_secure')
+        if not websocket_url:
+            websocket_url = server_config.get('websocket')
+        
+        if not websocket_url:
+            # Default URL
+            websocket_url = "wss://ugautodetal.ru/bitrix/subws/"
+        
+        print(f"\nBuilding WebSocket URL:")
+        print(f"  Base URL: {websocket_url}")
+        
+        # Ensure channel ID
+        if not self.channel_id:
+            channels = self.config.get('channels', {})
+            if 'private' in channels:
+                self.channel_id = channels['private']['id']
+                print(f"  Using channel from config: {self.channel_id[:50]}...")
+            elif 'shared' in channels:
+                self.channel_id = channels['shared']['id']
+                print(f"  Using channel from config: {self.channel_id[:50]}...")
+            else:
+                # Generate channel ID
+                timestamp = int(time.time())
+                random_part = hashlib.md5(f"{self.user_id}{timestamp}".encode()).hexdigest()
+                self.channel_id = f"{random_part}:private{self.user_id}"
+                print(f"  Generated channel ID: {self.channel_id[:50]}...")
         
         # Build query parameters
         params = {
@@ -342,58 +500,80 @@ class BitrixPullClient(QThread):
             'user_id': str(self.user_id),
             'site_id': self.site_id,
             'hostname': server_config.get('hostname', 'www.ugavtopart.ru'),
-            'binaryMode': 'true'
+            'timestamp': str(int(time.time() * 1000)),
+            'version': '2',
+            'format': 'json',
+            'mode': 'pull',
+            'binary': 'true' if self.binary_mode else 'false'
         }
         
-        # Добавление аутентификации
+        print(f"  Query parameters:")
+        for key, value in params.items():
+            print(f"    {key}: {value}")
+        
+        # Add authentication parameters
         if self.use_api_token and self.api_token:
-            # Используем API токен
+            params['auth_token'] = self.api_token
             params['api_token'] = self.api_token
-            self.log("Using API token for WebSocket authentication")
+            print(f"  Added API token parameters")
         else:
-            # Используем cookies из захваченных данных
-            important_cookies = []
-            for cookie_name, cookie_value in self.cookies.items():
-                # Add important authentication cookies
-                if any(keyword in cookie_name.lower() for keyword in 
-                      ['bitrix_sm_', 'phpsessid', 'uid', 'login']):
-                    important_cookies.append(f"{cookie_name}={cookie_value}")
-            
-            if important_cookies:
-                params['cookies'] = '; '.join(important_cookies)
-                self.log(f"Added {len(important_cookies)} authentication cookies to WebSocket request")
+            # Add session parameters
+            params['session_id'] = self.cookies.get('PHPSESSID', '')
+            params['bitrix_sid'] = self.cookies.get('BITRIX_SM_LOGIN', '')
+            print(f"  Added session parameters")
         
         # Build URL
         query_string = urllib.parse.urlencode(params)
         final_url = f"{websocket_url}?{query_string}"
         
-        # Debug logging
-        self.log(f"Built WebSocket URL")
-        if self.channel_id:
-            self.log(f"Channel ID: {self.channel_id[:50]}...")
+        print(f"  Final URL length: {len(final_url)} characters")
         
         return final_url
     
     def run_websocket(self):
         """Run WebSocket connection"""
         try:
+            # Disable SSL verification for development
+            sslopt = {
+                "cert_reqs": ssl.CERT_NONE,
+                "check_hostname": False,
+                "ssl_version": ssl.PROTOCOL_TLS
+            }
+            
+            print(f"\n" + "="*60)
+            print("Starting WebSocket connection...")
+            print(f"SSL Options: {sslopt}")
+            print("="*60)
+            
+            self.connection_start_time = time.time()
+            
+            # Run WebSocket with proper settings
             self.ws.run_forever(
-                sslopt={"cert_reqs": ssl.CERT_NONE},
+                sslopt=sslopt,
                 ping_interval=30,
                 ping_timeout=10,
-                reconnect=5
+                reconnect=5,
+                skip_utf8_validation=True,
+                origin=None  # Disable Origin check
             )
+            
+        except WebSocketException as e:
+            self.log(f"WebSocket exception: {e}")
+            if self.running:
+                self.schedule_reconnect()
         except Exception as e:
             self.log(f"WebSocket run error: {e}")
+            import traceback
+            traceback.print_exc()
             if self.running:
                 self.schedule_reconnect()
     
     def on_open(self, ws):
         """Handle WebSocket open"""
-        self.log("WebSocket connection opened")
-        
-        # Start ping timer
-        self.start_ping_timer()
+        print(f"\n" + "="*60)
+        print("✓ WebSocket connection established")
+        print(f"  Connection time: {time.time() - self.connection_start_time:.2f}s")
+        print("="*60)
         
         # Update status
         self.status = PullStatus.Online
@@ -401,157 +581,288 @@ class BitrixPullClient(QThread):
         self.reconnect_attempts = 0
         self.connection_status.emit(True, "Connected to Bitrix")
         
-        # Send debug info
-        if self.channel_id:
-            self.debug_info.emit(f"Connected with channel ID: {self.channel_id[:50]}...")
-        else:
-            self.debug_info.emit("Connected to Bitrix")
+        # Send initial subscription
+        self.send_initial_subscription()
+        
+        # Start ping timer
+        self.start_ping_timer()
+        
+        # Debug info
+        self.debug_info.emit(f"Connected with channel: {self.channel_id[:30]}...")
+        
+        print("✓ Connection fully established")
+    
+    def send_initial_subscription(self):
+        """Send initial subscription message"""
+        try:
+            subscription = {
+                "jsonrpc": "2.0",
+                "method": "subscribe",
+                "params": {
+                    "channels": {
+                        "private": [self.channel_id],
+                        "shared": []
+                    },
+                    "user_id": self.user_id,
+                    "site_id": self.site_id,
+                    "timestamp": int(time.time() * 1000)
+                },
+                "id": self.get_next_rpc_id()
+            }
+            
+            subscription_json = json.dumps(subscription)
+            self.ws.send(subscription_json)
+            self.bytes_sent += len(subscription_json)
+            
+            print(f"\n✓ Sent initial subscription")
+            print(f"  Subscription ID: {subscription['id']}")
+            print(f"  Channel: {self.channel_id[:50]}...")
+            print(f"  Message size: {len(subscription_json)} bytes")
+            print(f"  Subscription JSON: {subscription_json[:200]}...")
+            
+        except Exception as e:
+            print(f"✗ Error sending subscription: {e}")
+            import traceback
+            traceback.print_exc()
     
     def start_ping_timer(self):
-        """Start ping timer to keep connection alive"""
+        """Start ping timer"""
         if self.ping_timer:
             self.ping_timer.stop()
         
         self.ping_timer = QTimer()
-        self.ping_timer.timeout.connect(self.send_ping)
-        self.ping_timer.start(25000)  # 25 seconds
+        self.ping_timer.timeout.connect(self.send_keepalive)
+        self.ping_timer.start(20000)  # 20 seconds
+        print(f"✓ Started ping timer (20s interval)")
     
-    def send_ping(self):
-        """Send ping to keep connection alive"""
+    def send_keepalive(self):
+        """Send keepalive message"""
         if self.ws and self.is_authenticated:
             try:
-                # Send JSON-RPC ping
-                ping_data = {
-                    "jsonrpc": JSON_RPC_VERSION,
+                keepalive = {
+                    "jsonrpc": "2.0",
                     "method": "ping",
-                    "params": {},
+                    "params": {
+                        "timestamp": int(time.time() * 1000)
+                    },
                     "id": self.get_next_rpc_id()
                 }
-                self.ws.send(json.dumps(ping_data))
-                self.log("Sent ping")
+                
+                keepalive_json = json.dumps(keepalive)
+                self.ws.send(keepalive_json)
+                self.bytes_sent += len(keepalive_json)
+                
+                print(f"✓ Sent keepalive (ID: {keepalive['id']})")
+                
             except Exception as e:
-                self.log(f"Error sending ping: {e}")
+                print(f"✗ Error sending keepalive: {e}")
     
     def on_message(self, ws, message):
         """Handle incoming messages"""
         try:
-            self.log(f"Received message, length: {len(message)}")
+            self.message_count += 1
+            self.last_message_time = time.time()
             
-            if message == JSON_RPC_PING:
-                # Handle ping
-                self.ws.send(JSON_RPC_PONG)
-                self.update_ping_wait_timeout()
+            # Check message type
+            if isinstance(message, bytes):
+                # Binary message
+                self.bytes_received += len(message)
+                self.handle_binary_message(message)
+            elif isinstance(message, str):
+                # Text message
+                self.bytes_received += len(message.encode('utf-8'))
+                self.handle_text_message(message)
+            else:
+                print(f"⚠ Unknown message type: {type(message)}")
+                
+        except Exception as e:
+            print(f"✗ Error processing message: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def handle_binary_message(self, binary_data: bytes):
+        """Handle binary message"""
+        try:
+            print(f"\n" + "="*60)
+            print(f"📦 Received binary message #{self.message_count}")
+            print("="*60)
+            print(f"  Size: {len(binary_data)} bytes")
+            print(f"  Hex preview: {binary_data[:100].hex()}")
+            print(f"  ASCII preview: {binary_data[:100]}")
+            
+            # Try to decode as UTF-8
+            try:
+                text_data = binary_data.decode('utf-8', errors='ignore')
+                if text_data.strip():
+                    print(f"  Decoded as UTF-8: {len(text_data)} characters")
+                    self.process_text_message(text_data)
+                else:
+                    # Try Base64
+                    try:
+                        base64_str = base64.b64encode(binary_data[:100]).decode('utf-8')
+                        print(f"  Base64 preview: {base64_str}")
+                    except:
+                        print(f"  Raw binary data")
+                        
+                    # Also emit raw message for debugging
+                    self.raw_message_received.emit(f"Binary: {binary_data[:100].hex()}...")
+            except:
+                print(f"  Raw binary data (first 100 bytes): {binary_data[:100].hex()}")
+                self.raw_message_received.emit(f"Binary: {binary_data[:100].hex()}...")
+                
+        except Exception as e:
+            print(f"✗ Error handling binary message: {e}")
+    
+    def handle_text_message(self, text_data: str):
+        """Handle text message"""
+        print(f"\n" + "="*60)
+        print(f"📝 Received text message #{self.message_count}")
+        print("="*60)
+        print(f"  Size: {len(text_data)} characters")
+        
+        # Emit raw message for debugging
+        self.raw_message_received.emit(f"Text: {text_data[:200]}...")
+        
+        self.process_text_message(text_data)
+    
+    def process_text_message(self, text_data: str):
+        """Process text message"""
+        try:
+            # Clean up the message
+            text_data = text_data.strip()
+            
+            if not text_data:
+                print("  Empty message, skipping")
                 return
+            
+            print(f"  Content preview: {text_data[:200]}...")
             
             # Try to parse as JSON
             try:
-                data = json.loads(message)
-                self.handle_jsonrpc_message(data)
-            except json.JSONDecodeError:
-                # Might be binary/protobuf data
-                self.handle_binary_message(message)
+                data = json.loads(text_data)
+                print(f"  ✓ Parsed as JSON")
+                self.handle_json_message(data)
+            except json.JSONDecodeError as e:
+                print(f"  ✗ JSON decode error: {e}")
                 
+                # Check for special messages
+                if text_data == "ping":
+                    self.ws.send("pong")
+                    self.bytes_sent += 4
+                    print("  Responded to ping")
+                elif text_data == "pong":
+                    print("  Received pong")
+                else:
+                    # Try to find JSON in the text
+                    import re
+                    json_match = re.search(r'\{.*\}', text_data)
+                    if json_match:
+                        try:
+                            data = json.loads(json_match.group())
+                            print(f"  ✓ Found JSON in text")
+                            self.handle_json_message(data)
+                        except:
+                            print(f"  Non-JSON message: {text_data[:100]}")
+                    else:
+                        print(f"  Plain text message: {text_data[:100]}")
+                        
         except Exception as e:
-            self.log(f"Error processing message: {e}")
+            print(f"✗ Error processing text message: {e}")
     
-    def handle_binary_message(self, message):
-        """Handle binary/protobuf message"""
-        try:
-            # Try to decode as UTF-8 text
-            text = message.decode('utf-8', errors='ignore')
-            if text.startswith('{') or text.startswith('['):
-                # Actually JSON
-                try:
-                    self.handle_jsonrpc_message(json.loads(text))
-                except:
-                    self.log(f"Failed to parse JSON from binary: {text[:100]}")
-            else:
-                self.log(f"Binary message (first 100 bytes): {message[:100].hex()}")
-        except:
-            self.log(f"Raw binary message (length: {len(message)})")
-    
-    def handle_jsonrpc_message(self, data):
-        """Handle JSON-RPC message"""
+    def handle_json_message(self, data):
+        """Handle JSON message"""
         try:
             method = data.get('method')
             params = data.get('params', {})
             message_id = data.get('id')
             
+            print(f"\n📨 Processing JSON-RPC message")
+            print(f"  Method: {method}")
+            print(f"  Message ID: {message_id}")
+            print(f"  Has params: {'yes' if params else 'no'}")
+            
             if method == 'message':
+                # Handle actual message
+                print(f"  ↳ Handling message notification")
                 self.handle_incoming_message(params)
             elif method == 'ping':
                 # Respond to ping
+                print(f"  ↳ Responding to ping")
                 if self.ws:
                     pong_response = {
-                        "jsonrpc": JSON_RPC_VERSION,
+                        "jsonrpc": "2.0",
                         "result": "pong",
                         "id": message_id
                     }
-                    self.ws.send(json.dumps(pong_response))
+                    pong_json = json.dumps(pong_response)
+                    self.ws.send(pong_json)
+                    self.bytes_sent += len(pong_json)
             elif method == 'result':
-                # Handle result response
-                if message_id in self.rpc_response_awaiters:
-                    callback = self.rpc_response_awaiters.pop(message_id, None)
-                    if callback:
-                        try:
-                            callback(data.get('result'))
-                        except:
-                            pass
+                # Handle result
+                result = data.get('result', {})
+                print(f"  ↳ Processing result")
+                print(f"  Result: {result}")
+            elif method == 'error':
+                # Handle error
+                error = data.get('error', {})
+                print(f"  ↳ Processing error")
+                print(f"  Error: {error}")
             else:
-                self.log(f"Unknown JSON-RPC method: {method}")
-                # Emit generic message
+                # Unknown method, emit for handling
+                print(f"  ↳ Emitting unknown method")
                 self.message_received.emit({
                     'type': 'jsonrpc',
+                    'method': method,
                     'data': data
                 })
                 
         except Exception as e:
-            self.log(f"Error handling JSON-RPC message: {e}")
+            print(f"✗ Error handling JSON message: {e}")
     
     def handle_incoming_message(self, params):
-        """Handle incoming message notification"""
+        """Handle incoming message"""
         try:
             message_id = params.get('mid')
             body = params.get('body', {})
+            extra = params.get('extra', {})
+            
+            print(f"\n📩 Processing incoming message")
+            print(f"  Message ID: {message_id}")
+            print(f"  Module: {body.get('module_id', 'unknown')}")
+            print(f"  Command: {body.get('command', 'unknown')}")
+            print(f"  Extra keys: {list(extra.keys())}")
             
             # Update session
             if message_id:
                 self.session['mid'] = message_id
-            
-            # Check for duplicates
-            if message_id and message_id in self.session['lastMessageIds']:
-                self.log(f"Duplicate message {message_id} skipped")
-                return
-            
-            # Add to last message IDs
-            if message_id:
+                # Keep track of last messages
                 self.session['lastMessageIds'].append(message_id)
-                # Keep only last MAX_IDS_TO_STORE
                 if len(self.session['lastMessageIds']) > 10:
                     self.session['lastMessageIds'] = self.session['lastMessageIds'][-10:]
+                print(f"  ↳ Updated session MID: {message_id}")
             
             # Extract message data
             module_id = body.get('module_id', '').lower()
             command = body.get('command', '')
             message_params = body.get('params', {})
-            extra = body.get('extra', {})
             
-            # Add sender info
-            sender = params.get('sender', {})
-            if sender:
-                extra['sender'] = sender
+            print(f"  ↳ Processing {module_id}.{command}")
             
-            # Handle different module types
-            if module_id == 'pull':
-                self.handle_pull_event(command, message_params, extra)
-            elif module_id == 'online':
-                self.handle_online_event(command, message_params, extra)
+            # Process based on module
+            if module_id == 'uad.shop.chat':
+                print(f"  ↳ Handling uad.shop.chat message")
+                self.handle_uad_shop_chat(command, message_params, extra)
             elif module_id == 'im':
+                print(f"  ↳ Handling IM message")
                 self.handle_im_event(command, message_params, extra)
-            elif module_id == 'uad.shop.chat':
-                self.handle_uad_shop_chat_event(command, message_params, extra)
+            elif module_id == 'online':
+                print(f"  ↳ Handling online message")
+                self.handle_online_event(command, message_params, extra)
+            elif module_id == 'pull':
+                print(f"  ↳ Handling pull message")
+                self.handle_pull_event(command, message_params, extra)
             else:
-                # Generic module
+                print(f"  ↳ Handling generic message")
                 self.handle_generic_event(module_id, command, message_params, extra)
             
             # Send acknowledgment
@@ -559,86 +870,28 @@ class BitrixPullClient(QThread):
                 self.send_acknowledgment(message_id)
                 
         except Exception as e:
-            self.log(f"Error handling incoming message: {e}")
+            print(f"✗ Error handling incoming message: {e}")
+            import traceback
+            traceback.print_exc()
     
-    def send_acknowledgment(self, message_id):
-        """Send message acknowledgment"""
-        try:
-            ack_data = {
-                "jsonrpc": JSON_RPC_VERSION,
-                "method": "ack",
-                "params": {
-                    "mid": message_id
-                },
-                "id": self.get_next_rpc_id()
-            }
-            self.ws.send(json.dumps(ack_data))
-        except Exception as e:
-            self.log(f"Error sending acknowledgment: {e}")
-    
-    def handle_pull_event(self, command, params, extra):
-        """Handle pull module events"""
-        self.log(f"Pull event: {command}")
+    def handle_uad_shop_chat(self, command, params, extra):
+        """Handle uad.shop.chat messages"""
+        print(f"\n🛒 uad.shop.chat.{command}")
+        print(f"  Params keys: {list(params.keys())}")
+        print(f"  Extra keys: {list(extra.keys())}")
         
-        if command == 'channel_replaced':
-            self.handle_channel_replaced(params)
-        elif command == 'config_expired':
-            self.handle_config_expired()
-        elif command == 'revision_changed':
-            self.handle_revision_changed(params)
-        elif command == 'connection_status':
-            self.handle_connection_status(params)
-        
-        # Emit to UI
-        self.message_received.emit({
-            'type': f'pull.{command}',
-            'data': {
-                'params': params,
-                'extra': extra
-            }
-        })
-    
-    def handle_online_event(self, command, params, extra):
-        """Handle online module events"""
-        self.log(f"Online event: {command}")
-        
-        if command == 'userStatusChange':
-            user_id = params.get('user_id')
-            is_online = params.get('online', False)
+        # Special handling for newMessage
+        if command == 'newMessage':
+            message = params.get('message', '')
+            author = params.get('author', '')
+            group = params.get('group', {})
             
-            # Call user status callbacks
-            if user_id in self.user_status_callbacks:
-                for callback in self.user_status_callbacks[user_id]:
-                    try:
-                        callback({'userId': user_id, 'isOnline': is_online})
-                    except:
-                        pass
-        
-        # Emit to UI
-        self.message_received.emit({
-            'type': f'online.{command}',
-            'data': {
-                'params': params,
-                'extra': extra
-            }
-        })
-    
-    def handle_im_event(self, command, params, extra):
-        """Handle IM module events"""
-        self.log(f"IM event: {command}")
-        
-        # Emit to UI
-        self.message_received.emit({
-            'type': f'im.{command}',
-            'data': {
-                'params': params,
-                'extra': extra
-            }
-        })
-    
-    def handle_uad_shop_chat_event(self, command, params, extra):
-        """Handle uad.shop.chat module events"""
-        self.log(f"UAD Shop Chat event: {command}")
+            print(f"  ↳ New message from {author}")
+            print(f"  Message preview: {message[:100]}...")
+            print(f"  Group ID: {group.get('id', 'N/A')}")
+            
+            # Emit raw data for debugging
+            self.raw_message_received.emit(f"uad.shop.chat.{command}: {message[:100]}...")
         
         # Emit to UI
         self.message_received.emit({
@@ -649,9 +902,58 @@ class BitrixPullClient(QThread):
             }
         })
     
+    def handle_im_event(self, command, params, extra):
+        """Handle IM events"""
+        print(f"\n💬 IM.{command}")
+        print(f"  Params keys: {list(params.keys())}")
+        
+        # Emit to UI
+        self.message_received.emit({
+            'type': f'im.{command}',
+            'data': {
+                'params': params,
+                'extra': extra
+            }
+        })
+    
+    def handle_online_event(self, command, params, extra):
+        """Handle online events"""
+        print(f"\n🌐 Online.{command}")
+        print(f"  Params keys: {list(params.keys())}")
+        
+        # Emit to UI
+        self.message_received.emit({
+            'type': f'online.{command}',
+            'data': {
+                'params': params,
+                'extra': extra
+            }
+        })
+    
+    def handle_pull_event(self, command, params, extra):
+        """Handle pull events"""
+        print(f"\n🔄 Pull.{command}")
+        print(f"  Params keys: {list(params.keys())}")
+        
+        if command == 'channel_replaced':
+            new_channel = params.get('channel_id')
+            if new_channel:
+                print(f"  ↳ Channel replaced: {new_channel[:30]}...")
+                self.channel_id = new_channel
+        
+        # Emit to UI
+        self.message_received.emit({
+            'type': f'pull.{command}',
+            'data': {
+                'params': params,
+                'extra': extra
+            }
+        })
+    
     def handle_generic_event(self, module_id, command, params, extra):
-        """Handle generic module events"""
-        self.log(f"Generic event: {module_id}.{command}")
+        """Handle generic events"""
+        print(f"\n📦 {module_id}.{command}")
+        print(f"  Params keys: {list(params.keys())}")
         
         # Emit to UI
         self.message_received.emit({
@@ -662,100 +964,62 @@ class BitrixPullClient(QThread):
             }
         })
     
-    def handle_channel_replaced(self, params):
-        """Handle channel replacement"""
-        new_channel_id = params.get('channel_id')
-        if new_channel_id:
-            self.log(f"Channel replaced: {new_channel_id[:50]}...")
-            self.channel_id = new_channel_id
+    def send_acknowledgment(self, message_id):
+        """Send message acknowledgment"""
+        try:
+            ack = {
+                "jsonrpc": "2.0",
+                "method": "ack",
+                "params": {
+                    "mid": message_id
+                },
+                "id": self.get_next_rpc_id()
+            }
             
-            # Reconnect with new channel
-            self.schedule_reconnect(delay=1)
-    
-    def handle_config_expired(self):
-        """Handle config expiration"""
-        self.log("Config expired, reloading...")
-        self.load_config()
-        self.schedule_reconnect(delay=2)
-    
-    def handle_revision_changed(self, params):
-        """Handle revision change"""
-        new_revision = params.get('revision')
-        self.log(f"Revision changed: {self.revision} -> {new_revision}")
-        self.revision = new_revision
-        
-        # Show notification
-        self.debug_info.emit(f"System updated to revision {new_revision}")
-    
-    def handle_connection_status(self, params):
-        """Handle connection status update"""
-        status = params.get('status', 'unknown')
-        self.log(f"Connection status: {status}")
-        
-        if status == 'online':
-            self.status = PullStatus.Online
-            self.connection_status.emit(True, "Online")
-        elif status == 'offline':
-            self.status = PullStatus.Offline
-            self.connection_status.emit(False, "Offline")
-    
-    def handle_server_restarted(self):
-        """Handle server restart"""
-        self.log("Server restarted, reconnecting...")
-        self.schedule_reconnect(delay=15)
-    
-    def handle_user_status_change(self, params):
-        """Handle user status change"""
-        user_id = params.get('userId')
-        is_online = params.get('isOnline', False)
-        
-        if user_id in self.user_status_callbacks:
-            for callback in self.user_status_callbacks[user_id]:
-                try:
-                    callback(params)
-                except Exception as e:
-                    self.log(f"Error in user status callback: {e}")
-    
-    def update_ping_wait_timeout(self):
-        """Update ping wait timeout"""
-        if self.ping_wait_timeout:
-            self.ping_wait_timeout.stop()
-        
-        self.ping_wait_timeout = QTimer()
-        self.ping_wait_timeout.setSingleShot(True)
-        self.ping_wait_timeout.timeout.connect(self.on_ping_timeout)
-        self.ping_wait_timeout.start(self.PING_TIMEOUT * 2 * 1000)
-    
-    def on_ping_timeout(self):
-        """Handle ping timeout"""
-        self.ping_wait_timeout = None
-        if not self.running or not self.is_authenticated:
-            return
-        
-        self.log(f"No pings received in {self.PING_TIMEOUT * 2} seconds. Reconnecting")
-        self.disconnect(CloseReasons.STUCK, "connection stuck")
-        self.schedule_reconnect()
-    
-    def clear_ping_wait_timeout(self):
-        """Clear ping wait timeout"""
-        if self.ping_wait_timeout:
-            self.ping_wait_timeout.stop()
-            self.ping_wait_timeout = None
+            ack_json = json.dumps(ack)
+            self.ws.send(ack_json)
+            self.bytes_sent += len(ack_json)
+            
+            print(f"  ✓ Sent acknowledgment for message {message_id}")
+            
+        except Exception as e:
+            print(f"  ✗ Error sending acknowledgment: {e}")
     
     def on_error(self, ws, error):
         """Handle WebSocket error"""
-        self.log(f"WebSocket error: {error}")
+        print(f"\n" + "="*60)
+        print("✗ WebSocket error")
+        print("="*60)
+        print(f"Error: {error}")
         
-        # Check for authentication errors
-        if "401" in str(error) or "403" in str(error):
-            self.log("Authentication error")
-            self.debug_info.emit("Authentication failed. Please re-authenticate.")
+        # Extract details if available
+        if hasattr(error, 'status_code'):
+            print(f"Status code: {error.status_code}")
+        if hasattr(error, 'headers'):
+            print(f"Headers: {error.headers}")
+        if hasattr(error, 'body'):
+            print(f"Body: {error.body}")
         
-        self.connection_status.emit(False, f"Error: {error}")
+        # Update status
+        self.status = PullStatus.Offline
+        error_msg = str(error)[:100]
+        self.connection_status.emit(False, f"Error: {error_msg}")
+        
+        # Try to reconnect if not authentication error
+        if "401" not in str(error) and "403" not in str(error):
+            self.schedule_reconnect(delay=5)
     
     def on_close(self, ws, close_status_code, close_msg):
         """Handle WebSocket close"""
-        self.log(f"WebSocket closed: {close_status_code} - {close_msg}")
+        print(f"\n" + "="*60)
+        print("🔌 WebSocket closed")
+        print("="*60)
+        print(f"Status code: {close_status_code}")
+        print(f"Message: {close_msg}")
+        print(f"Connection duration: {time.time() - self.connection_start_time:.2f}s")
+        print(f"Messages received: {self.message_count}")
+        print(f"Bytes received: {self.bytes_received}")
+        print(f"Bytes sent: {self.bytes_sent}")
         
         self.is_authenticated = False
         
@@ -764,14 +1028,12 @@ class BitrixPullClient(QThread):
             self.ping_timer.stop()
             self.ping_timer = None
         
-        self.clear_ping_wait_timeout()
-        
         # Update status
         self.status = PullStatus.Offline
         self.connection_status.emit(False, "Disconnected")
         
-        # Schedule reconnect if not manual disconnect
-        if self.running and close_status_code != CloseReasons.NORMAL_CLOSURE and not self.is_manual_disconnect:
+        # Reconnect if not manual disconnect
+        if self.running and close_status_code != 1000 and not self.is_manual_disconnect:
             self.schedule_reconnect()
     
     def schedule_reconnect(self, delay: int = None):
@@ -780,7 +1042,7 @@ class BitrixPullClient(QThread):
             return
         
         if self.reconnect_attempts >= self.max_reconnect_attempts:
-            self.log("Max reconnect attempts reached")
+            print(f"\n✗ Max reconnect attempts reached ({self.reconnect_attempts})")
             self.debug_info.emit("Max reconnection attempts reached")
             return
         
@@ -789,20 +1051,23 @@ class BitrixPullClient(QThread):
             delay = min(5 * (2 ** self.reconnect_attempts), 60)
         
         self.reconnect_attempts += 1
-        self.log(f"Scheduling reconnect in {delay} seconds (attempt {self.reconnect_attempts})")
+        print(f"\n⏰ Scheduling reconnect in {delay} seconds (attempt {self.reconnect_attempts})")
         
         QTimer.singleShot(delay * 1000, self.reconnect)
     
     def reconnect(self):
         """Reconnect to server"""
         if self.running:
-            self.log("Reconnecting...")
+            print(f"\n🔄 Reconnecting...")
             self.connect()
     
-    def disconnect(self, code: int = None, reason: str = "Normal closure"):
+    def disconnect(self, code: int = 1000, reason: str = "Normal closure"):
         """Disconnect WebSocket"""
-        if not code:
-            code = CloseReasons.NORMAL_CLOSURE
+        print(f"\n" + "="*60)
+        print("👋 Manual disconnect")
+        print("="*60)
+        print(f"Code: {code}")
+        print(f"Reason: {reason}")
         
         self.is_manual_disconnect = True
         
@@ -820,181 +1085,53 @@ class BitrixPullClient(QThread):
             self.ping_timer.stop()
             self.ping_timer = None
         
-        if self.reconnect_timeout:
-            self.reconnect_timeout = None
-        
         self.status = PullStatus.Offline
-        self.connection_status.emit(False, "Disconnected")
     
-    def send_message(self, chat_id: int, text: str, files: List[Dict] = None, group_info: Dict = None):
-        """Send message to chat using JSON-RPC protocol"""
+    def send_message(self, chat_id: int, text: str):
+        """Send message to chat"""
         if not self.ws or not self.is_authenticated:
+            print(f"✗ Cannot send message: WebSocket not connected")
             return False
         
         try:
-            # Get user name using callback if available
-            author_name = "Unknown"
-            if self.get_user_name_callback:
-                author_name = self.get_user_name_callback(self.user_id)
-            
-            # Create message in JSON-RPC format
-            current_time = datetime.now()
-            message_data = {
-                "jsonrpc": JSON_RPC_VERSION,
-                "method": "publish",
-                "params": {
-                    "channelList": [str(chat_id)],  # Send to specific channel
-                    "body": {
-                        "module_id": "uad.shop.chat",
-                        "command": "newMessage",
-                        "params": {
-                            "author": author_name,
-                            "message": text,
-                            "group": group_info or {
-                                "id": str(chat_id),
-                                "touch": current_time.strftime("%H:%M"),
-                                "author_name": author_name,
-                                "title": "",
-                                "importance": "normal",
-                                "isActive": False,
-                                "members": [],
-                                "managersCount": 0,
-                                "customersCount": 0,
-                                "meta": {"pinned": "false"},
-                                "notifications": 0,
-                                "type": "messageGroup",
-                                "author": str(self.user_id),
-                                "date": current_time.isoformat(),
-                                "props": json.dumps({
-                                    "touch": current_time.strftime("%d.%m.%y %H:%M:%S"),
-                                    "author_name": author_name,
-                                    "title": "",
-                                    "importance": "normal"
-                                }),
-                                "state": None,
-                                "site": self.site_id
-                            }
-                        }
-                    },
-                    "extra": {
-                        "server_time": current_time.isoformat(),
-                        "server_time_unix": time.time(),
-                        "server_name": "www.ugavtopart.ru",
-                        "revision_web": self.revision,
-                        "revision_mobile": 3
-                    }
-                },
-                "id": self.get_next_rpc_id()
-            }
-            
-            # Send message
-            self.ws.send(json.dumps(message_data))
-            self.log(f"Sent message to chat {chat_id}")
-            return True
-            
-        except Exception as e:
-            self.log(f"Error sending message: {e}")
-            return False
-    
-    def send_typing(self, chat_id: int, is_typing: bool = True):
-        """Send typing indicator"""
-        if not self.ws or not self.is_authenticated:
-            return False
-        
-        try:
-            typing_data = {
-                "jsonrpc": JSON_RPC_VERSION,
+            message = {
+                "jsonrpc": "2.0",
                 "method": "publish",
                 "params": {
                     "channelList": [str(chat_id)],
                     "body": {
-                        "module_id": "im",
-                        "command": "typing",
+                        "module_id": "uad.shop.chat",
+                        "command": "newMessage",
                         "params": {
-                            "chat_id": chat_id,
-                            "typing": is_typing
+                            "author": f"User {self.user_id}",
+                            "message": text,
+                            "timestamp": int(time.time() * 1000)
                         }
                     }
                 },
                 "id": self.get_next_rpc_id()
             }
             
-            self.ws.send(json.dumps(typing_data))
+            message_json = json.dumps(message, ensure_ascii=False)
+            self.ws.send(message_json)
+            self.bytes_sent += len(message_json)
+            
+            print(f"\n" + "="*60)
+            print("📤 Sending message via WebSocket")
+            print("="*60)
+            print(f"Chat ID: {chat_id}")
+            print(f"Message ID: {message['id']}")
+            print(f"Message size: {len(message_json)} bytes")
+            print(f"Message preview: {text[:100]}...")
+            print(f"JSON preview: {message_json[:200]}...")
+            
             return True
             
         except Exception as e:
-            self.log(f"Error sending typing: {e}")
+            print(f"✗ Error sending message: {e}")
+            import traceback
+            traceback.print_exc()
             return False
-    
-    def subscribe_user_status_change(self, user_id: int, callback):
-        """Subscribe to user status changes"""
-        if not self.ws or not self.is_authenticated:
-            return False
-        
-        try:
-            # Store callback
-            if user_id not in self.user_status_callbacks:
-                self.user_status_callbacks[user_id] = []
-            
-            if callback not in self.user_status_callbacks[user_id]:
-                self.user_status_callbacks[user_id].append(callback)
-            
-            # Send subscription request
-            subscribe_data = {
-                "jsonrpc": JSON_RPC_VERSION,
-                "method": "subscribeStatusChange",
-                "params": {
-                    "userId": user_id
-                },
-                "id": self.get_next_rpc_id()
-            }
-            
-            self.ws.send(json.dumps(subscribe_data))
-            return True
-            
-        except Exception as e:
-            self.log(f"Error subscribing to user status: {e}")
-            return False
-    
-    def unsubscribe_user_status_change(self, user_id: int, callback):
-        """Unsubscribe from user status changes"""
-        if user_id in self.user_status_callbacks:
-            if callback in self.user_status_callbacks[user_id]:
-                self.user_status_callbacks[user_id].remove(callback)
-            
-            # If no more callbacks, send unsubscribe request
-            if not self.user_status_callbacks[user_id]:
-                try:
-                    unsubscribe_data = {
-                        "jsonrpc": JSON_RPC_VERSION,
-                        "method": "unsubscribeStatusChange",
-                        "params": {
-                            "userId": user_id
-                        },
-                        "id": self.get_next_rpc_id()
-                    }
-                    
-                    if self.ws and self.is_authenticated:
-                        self.ws.send(json.dumps(unsubscribe_data))
-                except Exception as e:
-                    self.log(f"Error unsubscribing from user status: {e}")
-    
-    def get_debug_info(self) -> Dict:
-        """Get debug information"""
-        return {
-            'status': self.status,
-            'connected': self.is_authenticated,
-            'user_id': self.user_id,
-            'channel_id': self.channel_id[:30] + "..." if self.channel_id and len(self.channel_id) > 30 else self.channel_id,
-            'site_id': self.site_id,
-            'reconnect_attempts': self.reconnect_attempts,
-            'revision': self.revision,
-            'config_timestamp': self.config_timestamp,
-            'connection_type': self.connection_type,
-            'rpc_id_counter': self.rpc_id_counter,
-            'use_api_token': self.use_api_token,
-            'has_api_token': self.api_token is not None
-        }
     
     def get_next_rpc_id(self):
         """Get next RPC ID"""
@@ -1003,5 +1140,60 @@ class BitrixPullClient(QThread):
     
     def stop(self):
         """Stop the client"""
+        print(f"\n" + "="*60)
+        print("🛑 Stopping Pull client")
+        print("="*60)
         self.running = False
-        self.disconnect(CloseReasons.MANUAL, "client stopped")
+        self.disconnect()
+    
+    def get_debug_info(self) -> Dict:
+        """Get debug information"""
+        connection_duration = 0
+        if self.connection_start_time:
+            connection_duration = time.time() - self.connection_start_time
+        
+        last_msg_age = "N/A"
+        if self.last_message_time:
+            last_msg_age = f"{time.time() - self.last_message_time:.1f}s"
+        
+        return {
+            'status': self.status,
+            'connected': self.is_authenticated,
+            'user_id': self.user_id,
+            'channel_id': self.channel_id[:30] + "..." if self.channel_id and len(self.channel_id) > 30 else self.channel_id,
+            'site_id': self.site_id,
+            'reconnect_attempts': self.reconnect_attempts,
+            'revision': self.revision,
+            'use_api_token': self.use_api_token,
+            'has_cookies': len(self.cookies) > 0,
+            'session_mid': self.session['mid'],
+            'message_count': self.message_count,
+            'bytes_received': self.bytes_received,
+            'bytes_sent': self.bytes_sent,
+            'connection_duration': f"{connection_duration:.1f}s",
+            'last_message_age': last_msg_age,
+            'websocket_open': self.ws is not None,
+            'ping_timer_active': self.ping_timer is not None and self.ping_timer.isActive()
+        }
+    
+    def print_statistics(self):
+        """Print detailed statistics"""
+        print(f"\n" + "="*60)
+        print("📊 Pull Client Statistics")
+        print("="*60)
+        
+        debug_info = self.get_debug_info()
+        for key, value in debug_info.items():
+            print(f"  {key}: {value}")
+        
+        print(f"\n  Session data:")
+        print(f"    Last MID: {self.session['mid']}")
+        print(f"    Last message IDs: {len(self.session['lastMessageIds'])}")
+        
+        if self.config:
+            print(f"\n  Configuration:")
+            server = self.config.get('server', {})
+            print(f"    WebSocket URL: {server.get('websocket_secure', 'N/A')}")
+            print(f"    Hostname: {server.get('hostname', 'N/A')}")
+            
+        print("="*60)
