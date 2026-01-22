@@ -24,7 +24,7 @@ def load_token_from_env():
     
     token = os.getenv('BITRIX_REST_TOKEN')
     user_id = os.getenv('BITRIX_USER_ID')
-    base_url = os.getenv('BITRIX_API_URL', 'https://ugautodetal.ru/stream/')
+    base_url = os.getenv('BITRIX_API_URL', 'https://ugautodetal.ru/')
     
     if not token or not user_id:
         print("❌ Error: REST API credentials not found in .env file")

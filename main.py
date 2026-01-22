@@ -725,6 +725,7 @@ class ChromeAuthApp:
             token_data = {
                 'token': token,
                 'user_id': user_id,
+                'local_storage': app.get_local_storage() if hasattr(app, 'get_local_storage') else {},
                 'csrf_token': csrf_token,
                 'site_id': site_id,
                 'timestamp': time.time(),
@@ -861,6 +862,7 @@ if __name__ == "__main__":
                     'BITRIX_USER_ID': str(user_id),
                     'BITRIX_CSRF_TOKEN': csrf_token,
                     'BITRIX_SITE_ID': site_id,
+                    'local_storage': app.get_local_storage() if hasattr(app, 'get_local_storage') else {},
                     'BITRIX_API_URL': 'https://ugautodetal.ru/stream/'
                 }
 

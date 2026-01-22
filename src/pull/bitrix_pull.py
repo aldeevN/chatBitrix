@@ -126,12 +126,12 @@ class BitrixPullClient(QThread):
         print("="*60)
         
         try:
-            # Try to load from auth_data_full.json first
-            if os.path.exists('auth_data_full.json'):
-                with open('auth_data_full.json', 'r', encoding='utf-8') as f:
+            # Try to load from bitrix_token.json first
+            if os.path.exists('bitrix_token.json'):
+                with open('bitrix_token.json', 'r', encoding='utf-8') as f:
                     auth_data = json.load(f)
                 
-                print(f"✓ Loaded auth_data_full.json ({len(auth_data)} items)")
+                print(f"✓ Loaded bitrix_token.json ({len(auth_data)} items)")
                 
                 # Extract Pull configuration
                 local_storage = auth_data.get('local_storage', {})
@@ -236,7 +236,7 @@ class BitrixPullClient(QThread):
                     'session_storage': auth_data.get('session_storage', {})
                 }
             else:
-                print("✗ auth_data_full.json not found")
+                print("✗ bitrix_token.json not found")
             
             return {}
             

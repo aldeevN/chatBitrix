@@ -72,7 +72,7 @@ class TelegramChatWindow(QMainWindow):
             print("✅ Skipping auth check (token pre-loaded from launcher)")
             return
             
-        if not os.path.exists('.env') or not os.path.exists('auth_data_full.json'):
+        if not os.path.exists('.env') or not os.path.exists('bitrix_token.json'):
             print("Authentication data not found.")
             reply = QMessageBox.question(
                 None,
@@ -127,9 +127,9 @@ class TelegramChatWindow(QMainWindow):
             print("  Warning: .env file not found")
         
         # Load auth data from JSON for reference
-        if os.path.exists('auth_data_full.json'):
+        if os.path.exists('bitrix_token.json'):
             try:
-                with open('auth_data_full.json', 'r', encoding='utf-8') as f:
+                with open('bitrix_token.json', 'r', encoding='utf-8') as f:
                     json_data = json.load(f)
                 print(f"  Loaded auth data from JSON ({len(json_data)} items)")
                 # Merge with auth_data (prefer .env values)
@@ -138,7 +138,7 @@ class TelegramChatWindow(QMainWindow):
                 if auth_data['user_id'] == 1 and 'user_id' in json_data:
                     auth_data['user_id'] = json_data['user_id']
             except Exception as e:
-                print(f"  Error loading auth_data_full.json: {e}")
+                print(f"  Error loading bitrix_token.json: {e}")
         
         print(f"  Final auth_data: user_id={auth_data.get('user_id')}, token={'present' if auth_data.get('token') else 'MISSING'}")
         # Additional fallbacks: check environment variables directly
@@ -158,7 +158,7 @@ class TelegramChatWindow(QMainWindow):
                     pass
 
         # Build Pull/WebSocket config from environment variables as a higher-priority source
-        # This lets the UI use websocket settings from .env without requiring auth_data_full.json
+        # This lets the UI use websocket settings from .env without requiring bitrix_token.json
         pull_config = {}
         cookies = {}
 
