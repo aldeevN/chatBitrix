@@ -686,9 +686,6 @@ class BitrixPullClient(QThread):
             print(f"\n" + "="*60)
             print(f"📦 Received binary message #{self.message_count}")
             print("="*60)
-            print(f"  Size: {len(binary_data)} bytes")
-            print(f"  Hex preview: {binary_data[:100].hex()}")
-            print(f"  ASCII preview: {binary_data[:100]}")
             
             # Try to decode as UTF-8
             try:
@@ -703,12 +700,8 @@ class BitrixPullClient(QThread):
                         print(f"  Base64 preview: {base64_str}")
                     except:
                         print(f"  Raw binary data")
-                        
-                    # Also emit raw message for debugging
-                    self.raw_message_received.emit(f"Binary: {binary_data[:100].hex()}...")
             except:
-                print(f"  Raw binary data (first 100 bytes): {binary_data[:100].hex()}")
-                self.raw_message_received.emit(f"Binary: {binary_data[:100].hex()}...")
+                print('recived msg')
                 
         except Exception as e:
             print(f"✗ Error handling binary message: {e}")
@@ -735,7 +728,7 @@ class BitrixPullClient(QThread):
                 print("  Empty message, skipping")
                 return
             
-            print(f"  Content preview: {text_data[:200]}...")
+            print(f"  Content preview: {text_data[:2000]}...")
             
             # Try to parse as JSON
             try:

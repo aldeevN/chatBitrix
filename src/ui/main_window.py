@@ -1388,8 +1388,10 @@ class TelegramChatWindow(QMainWindow):
         message_type = message_data.get('type', '')
         data = message_data.get('data', {})
         
-        print(f"Pull message: {message_type}")
+        print(f"Pull message: {message_data}")
         
+# Pull message: {'type': 'jsonrpc', 'method': None, 'data': {'id': 179, 'mid': '17515572610000000000000179', 'channel': '-', 'tag': '281', 'time': 'Thu, 22 Jan 2026 07:30:38 GMT', 'text': {'module_id': 'uad.shop.chat', 'command': 'newMessage', 'params': {'author': 'Аким Пономарев', 'message': 'fdsfd', 'group': {'touch': '08:20', 'author_name': 'Нургали Алдеев', 'title': 'something', 'importance': 'normal', 'isActive': False, 'members': [], 'managersCount': 0, 'customersCount': 0, 'target': {'ID': '632', 'XML_ID': '632#Akim#Пономарев Аким ', 'NAME': 'Аким', 'LAST_NAME': 'Пономарев', 'SECOND_NAME': '', 'EMAIL': 'ugautodetal0@mail.ru', 'PERSONAL_PHONE': '+79604968609', 'PERSONAL_MOBILE': '+79604968609', 'PERSONAL_STATE': '', 'PERSONAL_CITY': '', 'PERSONAL_STREET': '', 'PERSONAL_ZIP': ''}, 'meta': {'pinned': 'false'}, 'notifications': 0, 'type': 'messageGroup', 'id': '133', 'author': '2611', 'date': '2025-08-12T08:20:27+03:00', 'props': '{"touch":"22.01.26 10:22:21","author_name":"Нургали Алдеев","title":"something","importance":"normal"}', 'state': None, 'site': 'ap', 'sub_id': '319', 'sub_ctgroup': '133', 'sub_ctmember': '632', 'sub_role': 'target', 'sub_moderator': None, 'sub_date': '2025-08-12T08:20:27+03:00'}}, 'extra': {'server_time': '2026-01-22T10:30:38+03:00', 'server_time_unix': 1769067038.270975, 'server_name': 'www.ugavtopart.ru', 'revision_web': 19, 'revision_mobile': 3}}}}
+
         if message_type == 'uad.shop.chat.newMessage':
             self.handle_uad_new_message(data.get('params', {}))
         elif message_type == 'im.message':
