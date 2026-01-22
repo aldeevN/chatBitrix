@@ -6,6 +6,7 @@ import os
 import sys
 import json
 import time
+import traceback
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -662,10 +663,11 @@ class TelegramChatWindow(QMainWindow):
         # Initialize Pull client AFTER we have user data
         self.initialize_pull_client()
         
-        # Start periodic updates
+        # Start periodic updates (will be disabled when Pull client connects)
         self.update_timer = QTimer(self)
         self.update_timer.timeout.connect(self.periodic_update)
-        self.update_timer.start(30000)  # 30 seconds
+        self.update_timer.start(30000)  # 30 seconds (fallback when no Pull connection)
+        print("✓ Periodic update timer started (will be disabled when Pull client connects)")
     
     def initialize_pull_client(self):
         """Initialize Bitrix Pull client with proper authentication"""
@@ -1414,13 +1416,16 @@ class TelegramChatWindow(QMainWindow):
     
     def handle_uad_new_message(self, params: dict):
         """Handle new message from uad.shop.chat module"""
+        print('msg from pull' , params)
         try:
             author = params.get('author', '')
             message_text = params.get('message', '')
             group = params.get('group', {})
             group_id = group.get('id')
+            author_id = group.get('author')  # Extract sender_id from group.author
+            group_date = group.get('date')  # Extract timestamp
             
-            print(f"New uad.shop.chat message from {author} in group {group_id}: {message_text[:50]}...")
+            print(f"New uad.shop.chat message from {author} (ID: {author_id}) in group {group_id}: {message_text[:50]}...")
             
             # Convert group_id to int if possible
             try:
@@ -1428,23 +1433,40 @@ class TelegramChatWindow(QMainWindow):
             except:
                 group_id_int = 0
             
+            # Convert author_id to int if possible
+            try:
+                author_id_int = int(author_id) if author_id else 0
+            except:
+                author_id_int = 0
+            
+            # Parse timestamp
+            try:
+                timestamp = group_date if group_date else datetime.now().isoformat()
+            except:
+                timestamp = datetime.now().isoformat()
+            
             # Check if this message is for the current chat
             if self.current_group and self.current_group.id == group_id_int:
+                # Determine if message is from current user
+                is_own_message = author_id_int == self.current_user.id if self.current_user else False
+                
                 # Create message object
                 message = Message(
                     id=len(self.messages) + 1,
                     text=message_text,
-                    sender_id=0,  # Would need to get from params
+                    sender_id=author_id_int,
                     sender_name=author,
-                    timestamp=datetime.now().isoformat(),
+                    timestamp=timestamp,
                     files=[],
-                    is_own=False
+                    is_own=is_own_message
                 )
                 
-                # Add to messages and update display
+                # Add to messages and update display immediately (no delay)
                 self.messages.append(message)
-                self.update_messages_display()
+                self.update_messages_display()  # Direct call, no QTimer delay
                 self.scroll_to_bottom()
+                
+                print(f"✓ Message added to current chat (total messages: {len(self.messages)}) - INSTANT UPDATE")
                 
                 # Update group info
                 self.current_group.last_message = message_text[:50] + ("..." if len(message_text) > 50 else "")
@@ -1461,12 +1483,15 @@ class TelegramChatWindow(QMainWindow):
                 
                 # Show notification
                 self.show_notification(author, message_text, group_id_int)
+                print(f"✓ Message received in background group {group_id_int}, notification shown")
             
             # Update groups list
             QTimer.singleShot(1000, self.load_groups)
             
         except Exception as e:
             print(f"Error handling uad.shop.chat message: {e}")
+            import traceback
+            traceback.print_exc()
     
     def handle_im_message(self, params: dict):
         """Handle IM message from Pull client"""
@@ -1526,8 +1551,16 @@ class TelegramChatWindow(QMainWindow):
         
         if status == 'online':
             self.update_connection_status(True, "Connected to Bitrix")
+            # Disable periodic updates when Pull client is connected (real-time updates)
+            if self.update_timer and self.update_timer.isActive():
+                self.update_timer.stop()
+                print("✓ Periodic update timer DISABLED (Pull client connected for real-time updates)")
         elif status == 'offline':
             self.update_connection_status(False, "Disconnected from Bitrix")
+            # Re-enable periodic updates when Pull client disconnects
+            if self.update_timer and not self.update_timer.isActive():
+                self.update_timer.start(30000)
+                print("✓ Periodic update timer RE-ENABLED (Pull client disconnected, using fallback)")
     
     def get_user_name(self, user_id):
         """Get user name by ID"""

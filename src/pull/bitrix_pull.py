@@ -6,6 +6,8 @@ import random
 import ssl
 import urllib.parse
 import threading
+import re
+import traceback
 from datetime import datetime
 from typing import Dict, List, Optional, Callable, Any
 import struct
@@ -700,11 +702,14 @@ class BitrixPullClient(QThread):
                         print(f"  Base64 preview: {base64_str}")
                     except:
                         print(f"  Raw binary data")
-            except:
-                print('recived msg')
+            except Exception as decode_error:
+                print(f"  ✗ Error decoding binary: {decode_error}")
+                # Still emit raw message for analysis
+                self.raw_message_received.emit(f"Binary: {len(binary_data)} bytes")
                 
         except Exception as e:
             print(f"✗ Error handling binary message: {e}")
+            traceback.print_exc()
     
     def handle_text_message(self, text_data: str):
         """Handle text message"""
