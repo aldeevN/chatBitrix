@@ -1,59 +1,116 @@
 """
-Themes and colors for the UI
+Themes and colors for the UI - Dark and Light themes
 """
 
-COLORS = {
+# Light theme colors
+COLORS_LIGHT = {
+    'PRIMARY': '#3390ec',
+    'PRIMARY_DARK': '#2b7bc2',
+    'BACKGROUND': '#f5f5f7',
+    'SURFACE': '#ffffff',
+    'SURFACE_VARIANT': '#f0f0f3',
+    'ON_SURFACE': '#000000',
+    'ON_SURFACE_VARIANT': '#65676b',
+    'BORDER': '#e0e0e0',
+    'DIVIDER': '#e5e5e5',
+    'SUCCESS': '#31a24c',
+    'ERROR': '#f44336',
+    'WARNING': '#ff9800',
+    'INFO': '#2196f3',
+    # Backward compatibility
     'TELEGRAM_BLUE': '#3390ec',
     'TELEGRAM_BLUE_DARK': '#2b7bc2',
-    'BACKGROUND_LIGHT': '#f1f3f4',
-    'BACKGROUND_DARK': '#1e1e1e',
-    'CHAT_BG_LIGHT': '#ffffff',
-    'CHAT_BG_DARK': '#1a1d21',
-    'SIDEBAR_BG_LIGHT': '#ffffff',
-    'SIDEBAR_BG_DARK': '#1a1d21',
-    'BUBBLE_ME_LIGHT': '#dbf6c6',
-    'BUBBLE_ME_DARK': '#2b5278',
-    'BUBBLE_THEM_LIGHT': '#ffffff',
-    'BUBBLE_THEM_DARK': '#2d2d2d',
     'TEXT_LIGHT': '#000000',
-    'TEXT_DARK': '#e1e3e6',
-    'TEXT_SECONDARY_LIGHT': '#707579',
-    'TEXT_SECONDARY_DARK': '#a5a7ab',
-    'BORDER_LIGHT': '#e7e8ec',
-    'BORDER_DARK': '#2f3136',
+    'TEXT_SECONDARY_LIGHT': '#65676b',
 }
 
+# Dark theme colors
+COLORS_DARK = {
+    'PRIMARY': '#4fa3f5',
+    'PRIMARY_DARK': '#2b7bc2',
+    'BACKGROUND': '#0a0e27',
+    'SURFACE': '#1a1f3a',
+    'SURFACE_VARIANT': '#2a3054',
+    'ON_SURFACE': '#e8eaed',
+    'ON_SURFACE_VARIANT': '#9aa0a6',
+    'BORDER': '#3f4555',
+    'DIVIDER': '#424d63',
+    'SUCCESS': '#4caf50',
+    'ERROR': '#f44336',
+    'WARNING': '#ff9800',
+    'INFO': '#2196f3',
+    # Backward compatibility
+    'TELEGRAM_BLUE': '#4fa3f5',
+    'TELEGRAM_BLUE_DARK': '#2b7bc2',
+    'TEXT_LIGHT': '#e8eaed',
+    'TEXT_SECONDARY_LIGHT': '#9aa0a6',
+}
+
+# Default to light theme
+COLORS = COLORS_LIGHT
+
+def get_theme_colors(is_dark_mode: bool):
+    """Get colors for the specified theme"""
+    return COLORS_DARK if is_dark_mode else COLORS_LIGHT
+
 def apply_theme(widget, is_dark_mode=False):
-    """Apply theme to widget"""
-    if is_dark_mode:
-        widget.setStyleSheet(f"""
-            QMainWindow {{
-                background-color: {COLORS['BACKGROUND_DARK']};
-            }}
-            QWidget#sidebar {{
-                background-color: {COLORS['SIDEBAR_BG_DARK']};
-                border-right: 1px solid {COLORS['BORDER_DARK']};
-            }}
-            QWidget#chatArea {{
-                background-color: {COLORS['CHAT_BG_DARK']};
-            }}
-        """)
-    else:
-        widget.setStyleSheet(f"""
-            QMainWindow {{
-                background-color: {COLORS['BACKGROUND_LIGHT']};
-            }}
-            QWidget#sidebar {{
-                background-color: {COLORS['SIDEBAR_BG_LIGHT']};
-                border-right: 1px solid {COLORS['BORDER_LIGHT']};
-            }}
-            QWidget#chatArea {{
-                background-color: {COLORS['CHAT_BG_LIGHT']};
-            }}
-        """)
+    """Apply theme to widget with modern design"""
+    colors = get_theme_colors(is_dark_mode)
+    
+    stylesheet = f"""
+        QMainWindow {{
+            background-color: {colors['BACKGROUND']};
+            color: {colors['ON_SURFACE']};
+        }}
+        
+        QWidget#sidebar {{
+            background-color: {colors['SURFACE']};
+            border-right: 1px solid {colors['BORDER']};
+        }}
+        
+        QWidget#chatArea {{
+            background-color: {colors['BACKGROUND']};
+        }}
+        
+        QScrollArea {{
+            background-color: {colors['BACKGROUND']};
+            border: none;
+        }}
+        
+        QScrollBar:vertical {{
+            background-color: {colors['BACKGROUND']};
+            width: 8px;
+            border-radius: 4px;
+        }}
+        
+        QScrollBar::handle:vertical {{
+            background-color: {colors['ON_SURFACE_VARIANT']};
+            border-radius: 4px;
+            min-height: 30px;
+            margin: 2px 2px 2px 2px;
+        }}
+        
+        QScrollBar::handle:vertical:hover {{
+            background-color: {colors['BORDER']};
+        }}
+        
+        QMessageBox {{
+            background-color: {colors['SURFACE']};
+        }}
+        
+        QMessageBox QLabel {{
+            color: {colors['ON_SURFACE']};
+        }}
+        
+        QDialog {{
+            background-color: {colors['SURFACE']};
+        }}
+    """
+    
+    widget.setStyleSheet(stylesheet)
 
 def toggle_dark_mode(widget, current_mode):
-    """Toggle dark mode"""
+    """Toggle dark mode and return new mode"""
     new_mode = not current_mode
     apply_theme(widget, new_mode)
     return new_mode

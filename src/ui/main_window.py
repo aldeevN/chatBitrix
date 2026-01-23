@@ -13,7 +13,7 @@ from typing import Dict, List, Optional
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QScrollArea,
     QLabel, QPushButton, QTextEdit, QMenu, QMessageBox,
-    QFileDialog, QDialog, QStatusBar, QApplication
+    QFileDialog, QDialog, QStatusBar, QApplication, QLineEdit
 )
 from PyQt5.QtCore import (
     Qt, QTimer, pyqtSignal, pyqtSlot
@@ -29,7 +29,8 @@ from pull.bitrix_pull import BitrixPullClient
 from ui.widgets import TelegramButton, TelegramInput, TelegramSearchBar
 from ui.chat_list_item import ChatListItem
 from ui.message_bubble import MessageBubble
-from ui.themes import COLORS
+from ui.new_message_dialog import NewMessageDialog
+from ui.themes import COLORS, apply_theme, get_theme_colors
 
 class TelegramChatWindow(QMainWindow):
     def __init__(self):
@@ -62,6 +63,7 @@ class TelegramChatWindow(QMainWindow):
         
         self.setup_window()
         self.setup_ui()
+        self.apply_current_theme()
         
         # Start loading data
         QTimer.singleShot(100, self.initialize_data)
@@ -241,10 +243,11 @@ class TelegramChatWindow(QMainWindow):
         self.setWindowTitle("Telegram-like Business Chat (Bitrix Pull)")
         self.setGeometry(100, 100, 1200, 800)
         
-        # Set application style
+        # Set application style - will be overridden by apply_current_theme()
+        colors = get_theme_colors(self.is_dark_mode)
         self.setStyleSheet(f"""
             QMainWindow {{
-                background-color: {COLORS['BACKGROUND_LIGHT']};
+                background-color: {colors['BACKGROUND']};
                 border: none;
             }}
         """)
@@ -265,8 +268,8 @@ class TelegramChatWindow(QMainWindow):
         self.chat_area = self.create_chat_area()
         main_layout.addWidget(self.chat_area, 1)
         
-        # Apply Telegram-like spacing
-        self.sidebar.setFixedWidth(380)
+        # Modern spacing
+        self.sidebar.setFixedWidth(360)
         
         # Add connection status indicator to status bar
         self.setup_connection_indicator()
@@ -274,10 +277,11 @@ class TelegramChatWindow(QMainWindow):
     def create_sidebar(self) -> QWidget:
         sidebar = QWidget()
         sidebar.setObjectName("sidebar")
+        colors = get_theme_colors(self.is_dark_mode)
         sidebar.setStyleSheet(f"""
             QWidget#sidebar {{
-                background-color: {COLORS['SIDEBAR_BG_LIGHT']};
-                border-right: 1px solid {COLORS['BORDER_LIGHT']};
+                background-color: {colors['SURFACE']};
+                border-right: 2px solid {colors['BORDER']};
             }}
         """)
         
@@ -289,34 +293,50 @@ class TelegramChatWindow(QMainWindow):
         header = self.create_sidebar_header()
         layout.addWidget(header)
         
-        # Search bar
-        search_bar = TelegramSearchBar()
+        # Search bar with better styling
+        search_bar = TelegramSearchBar(is_dark=self.is_dark_mode)
+        search_bar.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: {colors['SURFACE_VARIANT']};
+                border: none;
+                border-radius: 24px;
+                padding: 10px 16px;
+                padding-left: 40px;
+                font-size: 14px;
+                color: {colors['ON_SURFACE']};
+                margin: 12px 12px;
+            }}
+            QLineEdit:focus {{
+                background-color: {colors['SURFACE']};
+                border: 2px solid {colors['PRIMARY']};
+                margin: 11px 11px;
+            }}
+        """)
         layout.addWidget(search_bar)
-        layout.setAlignment(search_bar, Qt.AlignTop)
         
-        # Chats list
+        # Chats list with improved styling
         self.chats_scroll = QScrollArea()
         self.chats_scroll.setWidgetResizable(True)
         self.chats_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.chats_scroll.setStyleSheet(f"""
             QScrollArea {{
                 border: none;
-                background-color: {COLORS['SIDEBAR_BG_LIGHT']};
+                background-color: {colors['SURFACE']};
             }}
             QScrollBar:vertical {{
-                background-color: {COLORS['BACKGROUND_LIGHT']};
-                width: 8px;
-                border-radius: 4px;
+                background-color: {colors['SURFACE']};
+                width: 6px;
+                border-radius: 3px;
                 margin: 0px;
             }}
             QScrollBar::handle:vertical {{
-                background-color: {COLORS['BORDER_LIGHT']};
-                border-radius: 4px;
-                min-height: 30px;
-                margin: 2px 2px 2px 2px;
+                background-color: {colors['BORDER']};
+                border-radius: 3px;
+                min-height: 20px;
+                margin: 2px 1px 2px 1px;
             }}
             QScrollBar::handle:vertical:hover {{
-                background-color: #c0c0c0;
+                background-color: {colors['ON_SURFACE_VARIANT']};
             }}
             QScrollBar::add-line:vertical {{
                 border: none;
@@ -330,64 +350,123 @@ class TelegramChatWindow(QMainWindow):
         
         self.chats_container = QWidget()
         self.chats_layout = QVBoxLayout(self.chats_container)
-        self.chats_layout.setContentsMargins(0, 0, 0, 0)
-        self.chats_layout.setSpacing(0)
+        self.chats_layout.setContentsMargins(4, 4, 4, 4)
+        self.chats_layout.setSpacing(4)
         self.chats_layout.addStretch()
         
         self.chats_scroll.setWidget(self.chats_container)
         layout.addWidget(self.chats_scroll, 1)
         
+        # New chat button at bottom
+        new_chat_bottom = QPushButton("➕ New Chat")
+        new_chat_bottom.setMinimumHeight(48)
+        new_chat_bottom.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors['PRIMARY']};
+                border: none;
+                border-radius: 12px;
+                color: white;
+                font-weight: 600;
+                font-size: 14px;
+                margin: 8px;
+                padding: 0px 16px;
+            }}
+            QPushButton:hover {{
+                background-color: {colors['PRIMARY_DARK']};
+            }}
+            QPushButton:pressed {{
+                background-color: {colors['PRIMARY_DARK']};
+            }}
+        """)
+        new_chat_bottom.clicked.connect(self.show_new_chat_dialog)
+        layout.addWidget(new_chat_bottom)
+        
         return sidebar
     
     def create_sidebar_header(self) -> QWidget:
         header = QWidget()
-        header.setFixedHeight(60)
+        header.setFixedHeight(56)
+        colors = get_theme_colors(self.is_dark_mode)
         header.setStyleSheet(f"""
             QWidget {{
-                background-color: {COLORS['SIDEBAR_BG_LIGHT']};
-                border-bottom: 1px solid {COLORS['BORDER_LIGHT']};
+                background-color: {colors['SURFACE']};
+                border-bottom: none;
             }}
         """)
         
         layout = QHBoxLayout(header)
-        layout.setContentsMargins(16, 8, 16, 8)
+        layout.setContentsMargins(16, 8, 12, 8)
+        layout.setSpacing(12)
         
-        # Title
-        title_label = QLabel("Business Chat")
+        # Title with icon
+        title_layout = QVBoxLayout()
+        title_layout.setContentsMargins(0, 0, 0, 0)
+        title_layout.setSpacing(0)
+        
+        title_label = QLabel("Чаты")
         title_label.setStyleSheet(f"""
             QLabel {{
-                font-size: 20px;
-                font-weight: bold;
-                color: {COLORS['TELEGRAM_BLUE']};
+                font-size: 24px;
+                font-weight: 700;
+                color: {colors['ON_SURFACE']};
+                letter-spacing: 0px;
             }}
         """)
-        layout.addWidget(title_label)
+        title_layout.addWidget(title_label)
+        layout.addLayout(title_layout, 1)
         
-        layout.addStretch()
+        # Filter/sort button
+        filter_btn = QPushButton("Все чаты")
+        filter_btn.setMaximumWidth(100)
+        filter_btn.setFixedHeight(32)
+        filter_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors['SURFACE_VARIANT']};
+                border: none;
+                border-radius: 8px;
+                color: {colors['ON_SURFACE']};
+                font-weight: 500;
+                font-size: 12px;
+                padding: 0px 8px;
+            }}
+            QPushButton:hover {{
+                background-color: {colors['BORDER']};
+            }}
+        """)
+        layout.addWidget(filter_btn)
         
-        # New chat button
-        new_chat_btn = TelegramButton("New Chat")
-        new_chat_btn.clicked.connect(self.show_new_chat_dialog)
-        layout.addWidget(new_chat_btn)
-        
-        # Debug button
-        debug_btn = TelegramButton("Debug")
-        debug_btn.clicked.connect(self.show_debug_info)
-        layout.addWidget(debug_btn)
+        # Profile/settings button
+        profile_btn = QPushButton("👤")
+        profile_btn.setFixedSize(36, 36)
+        profile_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                border: none;
+                border-radius: 50%;
+                font-size: 18px;
+            }}
+            QPushButton:hover {{
+                background-color: {colors['SURFACE_VARIANT']};
+                border-radius: 50%;
+            }}
+        """)
+        profile_btn.clicked.connect(self.show_profile)
+        layout.addWidget(profile_btn)
         
         # Menu button
-        menu_btn = QPushButton("☰")
-        menu_btn.setFixedSize(40, 40)
+        menu_btn = QPushButton("⋯")
+        menu_btn.setFixedSize(36, 36)
         menu_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: transparent;
                 border: none;
-                border-radius: 20px;
+                border-radius: 50%;
                 font-size: 18px;
-                color: {COLORS['TELEGRAM_BLUE']};
+                font-weight: bold;
+                color: {colors['ON_SURFACE']};
             }}
             QPushButton:hover {{
-                background-color: rgba(51, 144, 236, 0.1);
+                background-color: {colors['SURFACE_VARIANT']};
             }}
         """)
         menu_btn.clicked.connect(self.show_menu)
@@ -398,9 +477,10 @@ class TelegramChatWindow(QMainWindow):
     def create_chat_area(self) -> QWidget:
         chat_widget = QWidget()
         chat_widget.setObjectName("chatArea")
+        colors = get_theme_colors(self.is_dark_mode)
         chat_widget.setStyleSheet(f"""
             QWidget#chatArea {{
-                background-color: {COLORS['CHAT_BG_LIGHT']};
+                background-color: {colors['BACKGROUND']};
             }}
         """)
         
@@ -423,22 +503,22 @@ class TelegramChatWindow(QMainWindow):
         self.messages_scroll.setStyleSheet(f"""
             QScrollArea {{
                 border: none;
-                background-color: {COLORS['CHAT_BG_LIGHT']};
+                background-color: {colors['BACKGROUND']};
             }}
             QScrollBar:vertical {{
-                background-color: {COLORS['BACKGROUND_LIGHT']};
+                background-color: {colors['BACKGROUND']};
                 width: 8px;
                 border-radius: 4px;
                 margin: 0px;
             }}
             QScrollBar::handle:vertical {{
-                background-color: {COLORS['BORDER_LIGHT']};
+                background-color: {colors['ON_SURFACE_VARIANT']};
                 border-radius: 4px;
                 min-height: 30px;
                 margin: 2px 2px 2px 2px;
             }}
             QScrollBar::handle:vertical:hover {{
-                background-color: #c0c0c0;
+                background-color: {colors['BORDER']};
             }}
             QScrollBar::add-line:vertical {{
                 border: none;
@@ -452,7 +532,7 @@ class TelegramChatWindow(QMainWindow):
         
         self.messages_container = QWidget()
         self.messages_layout = QVBoxLayout(self.messages_container)
-        self.messages_layout.setContentsMargins(16, 16, 16, 16)
+        self.messages_layout.setContentsMargins(12, 12, 12, 12)
         self.messages_layout.setSpacing(8)
         self.messages_layout.addStretch()
         
@@ -469,78 +549,98 @@ class TelegramChatWindow(QMainWindow):
     
     def create_chat_header(self) -> QWidget:
         header = QWidget()
-        header.setFixedHeight(60)
+        header.setFixedHeight(56)
+        colors = get_theme_colors(self.is_dark_mode)
         header.setStyleSheet(f"""
             QWidget {{
-                background-color: {COLORS['SIDEBAR_BG_LIGHT']};
-                border-bottom: 1px solid {COLORS['BORDER_LIGHT']};
+                background-color: {colors['SURFACE']};
+                border-bottom: none;
             }}
         """)
         
         layout = QHBoxLayout(header)
-        layout.setContentsMargins(16, 8, 16, 8)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(12)
         
         # Back button (hidden by default)
         self.back_btn = QPushButton("←")
-        self.back_btn.setFixedSize(40, 40)
+        self.back_btn.setFixedSize(36, 36)
         self.back_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: transparent;
                 border: none;
-                border-radius: 20px;
-                font-size: 18px;
-                color: {COLORS['TELEGRAM_BLUE']};
+                border-radius: 18px;
+                font-size: 16px;
+                color: {colors['PRIMARY']};
+                font-weight: bold;
             }}
             QPushButton:hover {{
-                background-color: rgba(51, 144, 236, 0.1);
+                background-color: {colors['SURFACE_VARIANT']};
+            }}
+            QPushButton:pressed {{
+                background-color: {colors['BORDER']};
             }}
         """)
         self.back_btn.clicked.connect(self.go_back)
         self.back_btn.setVisible(False)
         layout.addWidget(self.back_btn)
         
-        # Chat title
+        # Chat title and info
+        title_layout = QVBoxLayout()
+        title_layout.setContentsMargins(0, 0, 0, 0)
+        title_layout.setSpacing(2)
+        
         self.chat_title = QLabel("Select a chat")
-        self.chat_title.setStyleSheet("""
-            QLabel {
-                font-size: 16px;
-                font-weight: bold;
-                color: #000000;
-            }
+        self.chat_title.setStyleSheet(f"""
+            QLabel {{
+                font-size: 15px;
+                font-weight: 600;
+                color: {colors['ON_SURFACE']};
+            }}
         """)
-        layout.addWidget(self.chat_title)
+        title_layout.addWidget(self.chat_title)
+        
+        self.chat_subtitle = QLabel("Online")
+        self.chat_subtitle.setStyleSheet(f"""
+            QLabel {{
+                font-size: 12px;
+                color: {colors['ON_SURFACE_VARIANT']};
+            }}
+        """)
+        title_layout.addWidget(self.chat_subtitle)
+        layout.addLayout(title_layout, 1)
         
         layout.addStretch()
         
         # Action buttons
         self.search_btn = QPushButton("🔍")
-        self.search_btn.setFixedSize(40, 40)
+        self.search_btn.setFixedSize(36, 36)
         self.search_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: transparent;
                 border: none;
-                border-radius: 20px;
-                font-size: 18px;
-                color: {COLORS['TELEGRAM_BLUE']};
+                border-radius: 18px;
+                font-size: 16px;
             }}
             QPushButton:hover {{
-                background-color: rgba(51, 144, 236, 0.1);
+                background-color: {colors['SURFACE_VARIANT']};
             }}
         """)
         layout.addWidget(self.search_btn)
         
-        self.menu_btn = QPushButton("⋮")
-        self.menu_btn.setFixedSize(40, 40)
+        self.menu_btn = QPushButton("⋯")
+        self.menu_btn.setFixedSize(36, 36)
         self.menu_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: transparent;
                 border: none;
-                border-radius: 20px;
-                font-size: 18px;
-                color: {COLORS['TELEGRAM_BLUE']};
+                border-radius: 18px;
+                font-size: 16px;
+                font-weight: bold;
+                color: {colors['ON_SURFACE']};
             }}
             QPushButton:hover {{
-                background-color: rgba(51, 144, 236, 0.1);
+                background-color: {colors['SURFACE_VARIANT']};
             }}
         """)
         self.menu_btn.clicked.connect(self.show_chat_menu)
@@ -548,22 +648,25 @@ class TelegramChatWindow(QMainWindow):
         
         return header
     
+    
     def create_input_area(self) -> QWidget:
-        """Setup message input area"""
+        """Setup modern message input area"""
         input_widget = QWidget()
-        input_widget.setFixedHeight(80)
+        input_widget.setFixedHeight(68)
+        colors = get_theme_colors(self.is_dark_mode)
         input_widget.setStyleSheet(f"""
             QWidget {{
-                background-color: {COLORS['SIDEBAR_BG_LIGHT']};
-                border-top: 1px solid {COLORS['BORDER_LIGHT']};
+                background-color: {colors['SURFACE']};
+                border-top: none;
             }}
         """)
         
         layout = QHBoxLayout(input_widget)
-        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(8)
         
         # Attachment button
-        attach_btn = QPushButton("📎")
+        attach_btn = QPushButton("➕")
         attach_btn.setFixedSize(40, 40)
         attach_btn.setStyleSheet(f"""
             QPushButton {{
@@ -571,25 +674,46 @@ class TelegramChatWindow(QMainWindow):
                 border: none;
                 border-radius: 20px;
                 font-size: 18px;
-                color: {COLORS['TEXT_SECONDARY_LIGHT']};
             }}
             QPushButton:hover {{
-                background-color: rgba(0, 0, 0, 0.1);
+                background-color: {colors['SURFACE_VARIANT']};
             }}
         """)
+        attach_btn.setCursor(Qt.PointingHandCursor)
         attach_btn.clicked.connect(self.attach_file)
         layout.addWidget(attach_btn)
         
-        # Message input
-        self.message_input = TelegramInput()
+        # Message input with modern styling
+        self.message_input = QLineEdit()
+        self.message_input.setPlaceholderText("Сообщение...")
+        self.message_input.setFixedHeight(40)
+        self.message_input.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: {colors['SURFACE_VARIANT']};
+                border: 1px solid {colors['BORDER']};
+                border-radius: 20px;
+                padding: 8px 16px;
+                font-size: 14px;
+                color: {colors['ON_SURFACE']};
+                selection-background-color: {colors['PRIMARY']};
+            }}
+            QLineEdit:focus {{
+                border: 2px solid {colors['PRIMARY']};
+                padding: 8px 15px;
+            }}
+            QLineEdit::placeholder {{
+                color: {colors['ON_SURFACE_VARIANT']};
+            }}
+        """)
+        self.message_input.returnPressed.connect(self.send_message)
         layout.addWidget(self.message_input, 1)
         
-        # Send button
-        self.send_btn = QPushButton("➤")
+        # Send button - cleaner modern design
+        self.send_btn = QPushButton("↗")
         self.send_btn.setFixedSize(40, 40)
         self.send_btn.setStyleSheet(f"""
             QPushButton {{
-                background-color: {COLORS['TELEGRAM_BLUE']};
+                background-color: {colors['PRIMARY']};
                 border: none;
                 border-radius: 20px;
                 font-size: 18px;
@@ -597,12 +721,17 @@ class TelegramChatWindow(QMainWindow):
                 font-weight: bold;
             }}
             QPushButton:hover {{
-                background-color: {COLORS['TELEGRAM_BLUE_DARK']};
+                background-color: {colors['PRIMARY']};
+                opacity: 0.9;
+            }}
+            QPushButton:pressed {{
+                background-color: {colors['PRIMARY']};
             }}
             QPushButton:disabled {{
-                background-color: #b0b0b0;
+                background-color: {colors['ON_SURFACE_VARIANT']};
             }}
         """)
+        self.send_btn.setCursor(Qt.PointingHandCursor)
         self.send_btn.clicked.connect(self.send_message)
         layout.addWidget(self.send_btn)
         
@@ -611,13 +740,14 @@ class TelegramChatWindow(QMainWindow):
     def setup_connection_indicator(self):
         """Add connection status indicator to UI"""
         self.connection_label = QLabel()
+        colors = get_theme_colors(self.is_dark_mode)
         self.connection_label.setStyleSheet(f"""
             QLabel {{
-                color: {COLORS['TEXT_SECONDARY_LIGHT']};
+                color: {colors['ON_SURFACE_VARIANT']};
                 font-size: 12px;
                 padding: 4px 8px;
                 border-radius: 10px;
-                background-color: rgba(0, 0, 0, 0.05);
+                background-color: {colors['SURFACE_VARIANT']};
             }}
         """)
         self.connection_label.setAlignment(Qt.AlignCenter)
@@ -1034,28 +1164,28 @@ class TelegramChatWindow(QMainWindow):
         self.update_messages_display()
     
     def update_chat_list(self):
-        """Update chat list with Telegram-style items"""
+        """Update chat list with modern Telegram-style items"""
         # Clear existing items
         while self.chats_layout.count() > 1:
             item = self.chats_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
         
-        # Add chat items
+        # Add chat items with theme support
         for group in self.groups:
-            item = ChatListItem(group, self.current_user, self.customers)
+            item = ChatListItem(group, self.current_user, self.customers, is_dark=self.is_dark_mode)
             item.clicked.connect(self.select_chat)
             self.chats_layout.insertWidget(0, item)
     
     def update_messages_display(self):
-        """Update messages display with Telegram-style bubbles"""
+        """Update messages display with modern Telegram-style bubbles"""
         # Clear current messages
         while self.messages_layout.count() > 1:
             item = self.messages_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
         
-        # Add messages with spacing
+        # Add messages with spacing and theme support
         for i, message in enumerate(self.messages):
             bubble = MessageBubble(message, self.is_dark_mode)
             
@@ -1095,6 +1225,9 @@ class TelegramChatWindow(QMainWindow):
             if group.id == group_id:
                 self.current_group = group
                 self.chat_title.setText(group.display_title(self.current_user, self.customers))
+                # Update subtitle with member count
+                member_count = len(group.members) if hasattr(group, 'members') else 1
+                self.chat_subtitle.setText(f"{member_count} участников" if member_count != 1 else "1 участник")
                 self.load_messages(group_id)
                 self.back_btn.setVisible(True)
                 break
@@ -1229,6 +1362,7 @@ class TelegramChatWindow(QMainWindow):
     def go_back(self):
         self.current_group = None
         self.chat_title.setText("Select a chat")
+        self.chat_subtitle.setText("Online")
         self.back_btn.setVisible(False)
         
         # Clear messages
@@ -1236,18 +1370,46 @@ class TelegramChatWindow(QMainWindow):
         self.update_messages_display()
     
     def show_new_chat_dialog(self):
-        dialog = QDialog(self)
-        dialog.setWindowTitle("New Chat")
-        dialog.setMinimumWidth(400)
+        """Show modern new message dialog"""
+        dialog = NewMessageDialog(
+            parent=self,
+            groups=self.groups,
+            current_user=self.current_user,
+            customers=self.customers,
+            is_dark=self.is_dark_mode
+        )
         
-        layout = QVBoxLayout(dialog)
-        layout.addWidget(QLabel("New Chat functionality would go here"))
+        def on_message_sent(text, group_id):
+            # Find group and select it
+            for group in self.groups:
+                if group.id == group_id:
+                    self.current_group = group
+                    self.chat_title.setText(group.display_title(self.current_user, self.customers))
+                    # Update subtitle with member count
+                    member_count = len(group.members) if hasattr(group, 'members') else 1
+                    self.chat_subtitle.setText(f"{member_count} участников" if member_count != 1 else "1 участник")
+                    self.load_messages(group_id)
+                    self.back_btn.setVisible(True)
+                    break
+            
+            # Send the message
+            self.send_message_with_text(text)
         
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(dialog.accept)
-        layout.addWidget(close_btn)
-        
+        dialog.message_sent.connect(on_message_sent)
         dialog.exec()
+    
+    def send_message_with_text(self, text: str):
+        """Send message with specific text"""
+        if not text or not self.current_group:
+            return
+        
+        self.message_input.setPlainText(text)
+        self.send_message()
+    
+    def apply_current_theme(self):
+        """Apply current theme to all widgets"""
+        apply_theme(self, self.is_dark_mode)
+        self.update_messages_display()
     
     def show_debug_info(self):
         """Show debug information about Pull client"""
@@ -1311,12 +1473,7 @@ class TelegramChatWindow(QMainWindow):
     
     def toggle_dark_mode(self):
         self.is_dark_mode = not self.is_dark_mode
-        self.apply_theme()
-    
-    def apply_theme(self):
-        from .themes import apply_theme
-        apply_theme(self, self.is_dark_mode)
-        self.update_messages_display()
+        self.apply_current_theme()
     
     def force_refresh(self):
         print("Forcing refresh...")

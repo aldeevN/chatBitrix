@@ -1,5 +1,5 @@
 """
-Chat list item widget for sidebar
+Chat list item widget for sidebar with modern design
 """
 
 from PyQt5.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel
@@ -7,30 +7,32 @@ from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QMouseEvent
 
 from api.models import Group, User, Customer
-from .themes import COLORS
+from .themes import get_theme_colors
 
 class ChatListItem(QWidget):
     clicked = pyqtSignal(int)
     
-    def __init__(self, group: Group, current_user: User, customers: list[Customer]):
+    def __init__(self, group: Group, current_user: User, customers: list, is_dark=False):
         super().__init__()
         self.group_id = group.id
         self.group = group
+        self.is_dark = is_dark
+        self.colors = get_theme_colors(is_dark)
         
         self.setup_ui(group, current_user, customers)
         self.apply_style()
     
-    def setup_ui(self, group: Group, current_user: User, customers: list[Customer]):
+    def setup_ui(self, group: Group, current_user: User, customers: list):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 8, 12, 8)
         layout.setSpacing(12)
         
-        # Avatar
+        # Avatar with initial
         avatar_label = QLabel()
         avatar_label.setFixedSize(48, 48)
         avatar_label.setStyleSheet(f"""
             QLabel {{
-                background-color: {COLORS['TELEGRAM_BLUE']};
+                background-color: {self.colors['PRIMARY']};
                 border-radius: 24px;
                 font-size: 18px;
                 font-weight: bold;
@@ -48,7 +50,7 @@ class ChatListItem(QWidget):
         avatar_label.setText(letter)
         layout.addWidget(avatar_label)
         
-        # Chat info
+        # Chat info section
         info_layout = QVBoxLayout()
         info_layout.setSpacing(4)
         
@@ -58,11 +60,12 @@ class ChatListItem(QWidget):
             title_text = f"({group.unread_count}) {title_text}"
         
         title_label = QLabel(title_text)
-        title_label.setStyleSheet("""
-            QLabel {
-                font-weight: 500;
+        title_label.setStyleSheet(f"""
+            QLabel {{
+                font-weight: 600;
                 font-size: 14px;
-            }
+                color: {self.colors['ON_SURFACE']};
+            }}
         """)
         info_layout.addWidget(title_label)
         
@@ -76,7 +79,7 @@ class ChatListItem(QWidget):
         preview_label = QLabel(preview_text[:50] + ("..." if len(preview_text) > 50 else ""))
         preview_label.setStyleSheet(f"""
             QLabel {{
-                color: {COLORS['TEXT_SECONDARY_LIGHT']};
+                color: {self.colors['ON_SURFACE_VARIANT']};
                 font-size: 13px;
             }}
         """)
@@ -93,7 +96,7 @@ class ChatListItem(QWidget):
                 time_label = QLabel(time_str)
                 time_label.setStyleSheet(f"""
                     QLabel {{
-                        color: {COLORS['TEXT_SECONDARY_LIGHT']};
+                        color: {self.colors['ON_SURFACE_VARIANT']};
                         font-size: 12px;
                     }}
                 """)
@@ -102,14 +105,16 @@ class ChatListItem(QWidget):
                 pass
     
     def apply_style(self):
-        self.setStyleSheet("""
-            QWidget {
+        hover_bg = self.colors['SURFACE_VARIANT']
+        self.setStyleSheet(f"""
+            QWidget {{
                 background-color: transparent;
                 border: none;
-            }
-            QWidget:hover {
-                background-color: rgba(0, 0, 0, 0.05);
-            }
+                border-radius: 12px;
+            }}
+            QWidget:hover {{
+                background-color: {hover_bg};
+            }}
         """)
     
     def mousePressEvent(self, event):
@@ -118,17 +123,13 @@ class ChatListItem(QWidget):
             event.accept()
     
     def enterEvent(self, event):
-        self.setStyleSheet("""
-            QWidget {
-                background-color: rgba(0, 0, 0, 0.05);
+        self.setStyleSheet(f"""
+            QWidget {{
+                background-color: {self.colors['SURFACE_VARIANT']};
                 border: none;
-            }
+                border-radius: 12px;
+            }}
         """)
     
     def leaveEvent(self, event):
-        self.setStyleSheet("""
-            QWidget {
-                background-color: transparent;
-                border: none;
-            }
-        """)
+        self.apply_style()

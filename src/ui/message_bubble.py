@@ -1,5 +1,5 @@
 """
-Message bubble widget for chat
+Message bubble widget for chat with modern design
 """
 
 import os
@@ -12,13 +12,14 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt
 
 from api.models import Message
-from .themes import COLORS
+from .themes import get_theme_colors
 
 class MessageBubble(QWidget):
     def __init__(self, message: Message, is_dark: bool = False):
         super().__init__()
         self.message = message
         self.is_dark = is_dark
+        self.colors = get_theme_colors(is_dark)
         
         self.setup_ui()
         self.apply_style()
@@ -33,9 +34,10 @@ class MessageBubble(QWidget):
             sender_label = QLabel(self.message.sender_name)
             sender_label.setStyleSheet(f"""
                 QLabel {{
-                    color: {COLORS['TELEGRAM_BLUE']};
-                    font-weight: 500;
-                    font-size: 13px;
+                    color: {self.colors['PRIMARY']};
+                    font-weight: 600;
+                    font-size: 12px;
+                    letter-spacing: 0.3px;
                 }}
             """)
             layout.addWidget(sender_label)
@@ -44,6 +46,14 @@ class MessageBubble(QWidget):
         text_label = QLabel(self.message.text)
         text_label.setWordWrap(True)
         text_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        text_label.setStyleSheet(f"""
+            QLabel {{
+                color: {self.colors['ON_SURFACE']};
+                font-size: 14px;
+                line-height: 1.4;
+                background-color: transparent;
+            }}
+        """)
         layout.addWidget(text_label)
         
         # Files attachments
@@ -59,8 +69,8 @@ class MessageBubble(QWidget):
         time_label = QLabel(self.message.time_display)
         time_label.setStyleSheet(f"""
             QLabel {{
-                color: {COLORS['TEXT_SECONDARY_LIGHT']};
-                font-size: 12px;
+                color: {self.colors['ON_SURFACE_VARIANT']};
+                font-size: 11px;
             }}
         """)
         footer_layout.addWidget(time_label)
@@ -70,8 +80,9 @@ class MessageBubble(QWidget):
             status_label = QLabel(status_icon)
             status_label.setStyleSheet(f"""
                 QLabel {{
-                    color: {COLORS['TELEGRAM_BLUE']};
-                    font-size: 12px;
+                    color: {self.colors['PRIMARY']};
+                    font-size: 11px;
+                    margin-left: 4px;
                 }}
             """)
             footer_layout.addWidget(status_label)
@@ -80,15 +91,17 @@ class MessageBubble(QWidget):
     
     def create_file_widget(self, file_info: Dict) -> QFrame:
         file_widget = QFrame()
-        file_widget.setStyleSheet("""
-            QFrame {
-                background-color: rgba(255, 255, 255, 0.3);
-                border-radius: 8px;
+        file_widget.setStyleSheet(f"""
+            QFrame {{
+                background-color: {self.colors['SURFACE_VARIANT']};
+                border-radius: 12px;
+                border: 1px solid {self.colors['BORDER']};
                 padding: 8px;
-            }
+            }}
         """)
         
         layout = QHBoxLayout(file_widget)
+        layout.setSpacing(8)
         
         # File icon based on type
         filename = file_info.get('name', 'file')
@@ -96,37 +109,51 @@ class MessageBubble(QWidget):
         icon = self.get_file_icon(ext)
         
         icon_label = QLabel(icon)
-        icon_label.setStyleSheet("font-size: 20px;")
+        icon_label.setStyleSheet("font-size: 24px;")
+        icon_label.setFixedWidth(30)
         layout.addWidget(icon_label)
         
         # File info
         file_layout = QVBoxLayout()
+        file_layout.setSpacing(2)
         
         name_label = QLabel(filename)
-        name_label.setStyleSheet("font-weight: 500;")
+        name_label.setStyleSheet(f"""
+            QLabel {{
+                font-weight: 600;
+                font-size: 13px;
+                color: {self.colors['ON_SURFACE']};
+            }}
+        """)
         file_layout.addWidget(name_label)
         
         size = file_info.get('size', 0)
         size_str = self.format_size(size)
         size_label = QLabel(size_str)
-        size_label.setStyleSheet(f"color: {COLORS['TEXT_SECONDARY_LIGHT']}; font-size: 12px;")
+        size_label.setStyleSheet(f"""
+            QLabel {{
+                color: {self.colors['ON_SURFACE_VARIANT']};
+                font-size: 11px;
+            }}
+        """)
         file_layout.addWidget(size_label)
         
         layout.addLayout(file_layout, 1)
         
         # Download button
         download_btn = QPushButton("↓")
-        download_btn.setFixedSize(30, 30)
+        download_btn.setFixedSize(32, 32)
         download_btn.setStyleSheet(f"""
             QPushButton {{
-                background-color: rgba(51, 144, 236, 0.1);
+                background-color: {self.colors['PRIMARY']};
                 border: none;
-                border-radius: 15px;
-                color: {COLORS['TELEGRAM_BLUE']};
+                border-radius: 16px;
+                color: white;
                 font-weight: bold;
+                font-size: 14px;
             }}
             QPushButton:hover {{
-                background-color: rgba(51, 144, 236, 0.2);
+                background-color: {self.colors['PRIMARY_DARK']};
             }}
         """)
         download_btn.clicked.connect(lambda: self.download_file(file_info))
@@ -154,66 +181,38 @@ class MessageBubble(QWidget):
         return f"{size:.1f} TB"
     
     def apply_style(self):
+        """Apply modern bubble style based on sender"""
         if self.message.is_own:
-            if self.is_dark:
-                self.setStyleSheet(f"""
-                    QWidget {{
-                        background-color: {COLORS['BUBBLE_ME_DARK']};
-                        border-radius: 18px;
-                        border-top-right-radius: 4px;
-                        border: none;
-                        padding: 8px;
-                    }}
-                    QLabel {{
-                        color: {COLORS['TEXT_DARK']};
-                        background-color: transparent;
-                    }}
-                """)
-            else:
-                self.setStyleSheet(f"""
-                    QWidget {{
-                        background-color: {COLORS['BUBBLE_ME_LIGHT']};
-                        border-radius: 18px;
-                        border-top-right-radius: 4px;
-                        border: none;
-                        padding: 8px;
-                    }}
-                    QLabel {{
-                        color: {COLORS['TEXT_LIGHT']};
-                        background-color: transparent;
-                    }}
-                """)
+            self.setStyleSheet(f"""
+                QWidget {{
+                    background-color: {self.colors['PRIMARY']};
+                    border-radius: 20px;
+                    border-top-right-radius: 4px;
+                    border: none;
+                    padding: 8px;
+                    margin: 2px;
+                }}
+                QLabel {{
+                    color: white;
+                    background-color: transparent;
+                }}
+            """)
         else:
-            if self.is_dark:
-                self.setStyleSheet(f"""
-                    QWidget {{
-                        background-color: {COLORS['BUBBLE_THEM_DARK']};
-                        border-radius: 18px;
-                        border-top-left-radius: 4px;
-                        border: 1px solid {COLORS['BORDER_DARK']};
-                        padding: 8px;
-                    }}
-                    QLabel {{
-                        color: {COLORS['TEXT_DARK']};
-                        background-color: transparent;
-                    }}
-                """)
-            else:
-                self.setStyleSheet(f"""
-                    QWidget {{
-                        background-color: {COLORS['BUBBLE_THEM_LIGHT']};
-                        border-radius: 18px;
-                        border-top-left-radius: 4px;
-                        border: 1px solid {COLORS['BORDER_LIGHT']};
-                        padding: 8px;
-                    }}
-                    QLabel {{
-                        color: {COLORS['TEXT_LIGHT']};
-                        background-color: transparent;
-                    }}
-                """)
+            self.setStyleSheet(f"""
+                QWidget {{
+                    background-color: {self.colors['SURFACE']};
+                    border-radius: 20px;
+                    border-top-left-radius: 4px;
+                    border: 1px solid {self.colors['BORDER']};
+                    padding: 8px;
+                    margin: 2px;
+                }}
+                QLabel {{
+                    color: {self.colors['ON_SURFACE']};
+                    background-color: transparent;
+                }}
+            """)
     
     def download_file(self, file_info: Dict):
         """Handle file download"""
         print(f"Downloading: {file_info.get('name')}")
-        # TODO: Implement actual file download
