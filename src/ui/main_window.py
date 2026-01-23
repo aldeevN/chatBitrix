@@ -299,17 +299,17 @@ class TelegramChatWindow(QMainWindow):
             QLineEdit {{
                 background-color: {colors['SURFACE_VARIANT']};
                 border: none;
-                border-radius: 24px;
-                padding: 10px 16px;
+                border-radius: 5px;
+                padding: 5px;
                 padding-left: 40px;
                 font-size: 14px;
                 color: {colors['ON_SURFACE']};
-                margin: 12px 12px;
+                margin: 2px;
             }}
             QLineEdit:focus {{
                 background-color: {colors['SURFACE']};
-                border: 2px solid {colors['PRIMARY']};
-                margin: 11px 11px;
+                border: 1px solid {colors['PRIMARY']};
+                margin: 2px;
             }}
         """)
         layout.addWidget(search_bar)
@@ -923,11 +923,11 @@ class TelegramChatWindow(QMainWindow):
         else:
             print("Using user ID from captured data")
             self.current_user = User(
-                id=2611,  # From your captured data
-                name="Нургали",
-                last_name="Алдеев",
-                email="Aldeev@ugautodetal.ru",
-                is_manager=True,
+                id=1,  
+                name="Неизвестно",
+                last_name="",
+                email="mail@example.com",
+                is_manager=False,
                 is_moderator=False
             )
     
@@ -1092,9 +1092,6 @@ class TelegramChatWindow(QMainWindow):
                 self.groups.append(group)
             
             print(f"Loaded {len(self.groups)} groups")
-        else:
-            print("Using mock groups")
-            self.groups = self.get_mock_groups()
         
         # Sort groups (pinned first, then by date)
         self.groups.sort(key=lambda x: (not x.pinned, x.date or ""), reverse=True)
@@ -1128,10 +1125,10 @@ class TelegramChatWindow(QMainWindow):
                 messages_list = []
             
             for msg in messages_list:
-                message_text = msg.get("text") or msg.get("TEXT") or msg.get("message") or ""
-                sender_id = msg.get("author") or msg.get("sender_id") or msg.get("AUTHOR_ID") or 0
-                sender_name = msg.get("author_name") or msg.get("sender_name") or msg.get("AUTHOR_NAME") or ""
-                
+                message_text = msg.get("message") or ""
+                sender_id = msg.get("author") or 0
+                msg_prop = json.loads(msg.get("props"))
+                sender_name = msg_prop.get("author_name") or  ""
                 attachments = []
                 files = msg.get("files") or msg.get("attachments") or []
                 if files and isinstance(files, list):
@@ -1157,14 +1154,11 @@ class TelegramChatWindow(QMainWindow):
                 self.messages.append(message)
             
             print(f"Loaded {len(self.messages)} messages")
-        else:
-            print("Using demo messages")
-            self.load_demo_messages(group_id)
         
         self.update_messages_display()
     
     def update_chat_list(self):
-        """Update chat list with modern Telegram-style items"""
+        """Update chat list """
         # Clear existing items
         while self.chats_layout.count() > 1:
             item = self.chats_layout.takeAt(0)
@@ -1178,7 +1172,7 @@ class TelegramChatWindow(QMainWindow):
             self.chats_layout.insertWidget(0, item)
     
     def update_messages_display(self):
-        """Update messages display with modern Telegram-style bubbles"""
+        """Update messages display bubbles"""
         # Clear current messages
         while self.messages_layout.count() > 1:
             item = self.messages_layout.takeAt(0)
@@ -1192,7 +1186,7 @@ class TelegramChatWindow(QMainWindow):
             # Add spacing between different senders
             if i > 0 and self.messages[i-1].sender_id != message.sender_id:
                 spacer = QWidget()
-                spacer.setFixedHeight(12)
+                spacer.setFixedHeight(1)
                 self.messages_layout.insertWidget(self.messages_layout.count() - 1, spacer)
             
             # Create a container widget for alignment
@@ -1233,7 +1227,7 @@ class TelegramChatWindow(QMainWindow):
                 break
     
     def send_message(self):
-        text = self.message_input.toPlainText().strip()
+        text = self.message_input.text().strip()
         if not text or not self.current_group:
             return
         
@@ -1271,33 +1265,6 @@ class TelegramChatWindow(QMainWindow):
                 # Show success message
                 self.statusBar().showMessage("✓ Message sent successfully", 3000)
                 
-                # Try to also send via Pull client if available (for real-time updates)
-                if self.pull_client and self.pull_client.is_authenticated:
-                    try:
-                        # Send via Pull client for real-time propagation
-                        if hasattr(self.pull_client, 'ws') and self.pull_client.ws:
-                            pull_message = {
-                                "jsonrpc": "2.0",
-                                "method": "publish",
-                                "params": {
-                                    "channelList": [str(self.current_group.id)],
-                                    "body": {
-                                        "module_id": "uad.shop.chat",
-                                        "command": "newMessage",
-                                        "params": {
-                                            "author": self.current_user.display_name,
-                                            "message": text,
-                                            "timestamp": int(time.time() * 1000)
-                                        }
-                                    }
-                                },
-                                "id": self.pull_client.get_next_rpc_id() if hasattr(self.pull_client, 'get_next_rpc_id') else 1
-                            }
-                            self.pull_client.ws.send(json.dumps(pull_message))
-                            print("✓ Message also sent via Pull client")
-                    except Exception as pull_error:
-                        print(f"Note: Could not send via Pull client: {pull_error}")
-                
             else:
                 # If API returns error, fall back to demo mode
                 error_msg = data.get("error_description", "Unknown error") if isinstance(data, dict) else "Unknown error"
@@ -1306,44 +1273,6 @@ class TelegramChatWindow(QMainWindow):
                 
         except Exception as e:
             print(f"Error sending via HTTP API: {e}")
-            self.send_demo_message(text)
-    
-    def send_demo_message(self, text: str):
-        """Send message in demo mode (fallback)"""
-        reply = QMessageBox.question(
-            self,
-            "Demo Mode",
-            "Failed to send message via API.\nAdd message locally for demo?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes
-        )
-        
-        if reply == QMessageBox.Yes:
-            # Create demo message
-            new_msg = Message(
-                id=len(self.messages) + 1,
-                text=text,
-                sender_id=self.current_user.id,
-                sender_name=self.current_user.display_name,
-                timestamp=datetime.now().isoformat(),
-                files=[],
-                is_own=True
-            )
-            
-            # Add to messages
-            self.messages.append(new_msg)
-            
-            # Update UI
-            self.update_messages_display()
-            self.message_input.clear()
-            
-            # Update group info
-            self.current_group.last_message = text[:50] + ("..." if len(text) > 50 else "")
-            self.current_group.last_message_time = "just now"
-            self.update_chat_list()
-            
-            # Show info message
-            self.statusBar().showMessage("Message added locally (demo mode)", 3000)
     
     def attach_file(self):
         file_paths, _ = QFileDialog.getOpenFileNames(

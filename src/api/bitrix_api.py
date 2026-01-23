@@ -264,9 +264,7 @@ class BitrixAPI:
         """Get all customers/contacts - using proper chat API"""
         # Try different API endpoints
         endpoints = [
-            "uad.shop.api.profile.listCustomers",
-            "uad.shop.api.chat.getCustomers", 
-            "crm.contact.list"
+            "uad.shop.api.customer.getAll"
         ]
         
         for endpoint in endpoints:
