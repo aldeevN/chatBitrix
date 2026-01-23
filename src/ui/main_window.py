@@ -1217,10 +1217,11 @@ class TelegramChatWindow(QMainWindow):
         print(f"Selecting chat: {group_id}")
         for group in self.groups:
             if group.id == group_id:
+                print(f'select group {group_id}')
                 self.current_group = group
                 self.chat_title.setText(group.display_title(self.current_user, self.customers))
                 # Update subtitle with member count
-                member_count = len(group.members) if hasattr(group, 'members') else 1
+                member_count = len(group.members) if hasattr(group, 'members') else 2
                 self.chat_subtitle.setText(f"{member_count} участников" if member_count != 1 else "1 участник")
                 self.load_messages(group_id)
                 self.back_btn.setVisible(True)
@@ -1486,7 +1487,7 @@ class TelegramChatWindow(QMainWindow):
             group = msg_data.get('group')
             author = msg_data.get('author', '')
             group_id = group.get('id')
-            author_id = group['author']  # Extract sender_id from group.author
+            author_id = group['sub_ctmember']  # Extract sender_id from group.author
             group_date = msg_data.get('sub_date')  # Extract timestamp
             
             # Convert group_id to int if possible
@@ -1497,6 +1498,7 @@ class TelegramChatWindow(QMainWindow):
             
             # Convert author_id to int if possible
             try:
+                print(author_id)
                 author_id_int = int(author_id) if author_id else 0
             except:
                 author_id_int = 0
@@ -1525,6 +1527,7 @@ class TelegramChatWindow(QMainWindow):
                 
                 # Add to messages and update display immediately (no delay)
                 self.messages.append(message)
+
                 self.update_messages_display()  # Direct call, no QTimer delay
                 self.scroll_to_bottom()
                 
@@ -1554,57 +1557,6 @@ class TelegramChatWindow(QMainWindow):
             print(f"Error handling uad.shop.chat message: {e}")
             import traceback
             traceback.print_exc()
-    
-    def handle_im_message(self, params: dict):
-        """Handle IM message from Pull client"""
-        try:
-            chat_id = params.get('chat_id')
-            sender_id = params.get('sender_id')
-            text = params.get('text', '')
-            timestamp = params.get('timestamp', datetime.now().isoformat())
-            
-            print(f"New message in chat {chat_id} from {sender_id}: {text[:50]}...")
-            
-            # Check if this message is for the current chat
-            if self.current_group and self.current_group.id == int(chat_id):
-                # Create message object
-                message = Message(
-                    id=params.get('id') or len(self.messages) + 1,
-                    text=text,
-                    sender_id=int(sender_id) if sender_id else 0,
-                    sender_name=self.get_user_name(sender_id),
-                    timestamp=timestamp,
-                    files=params.get('files', []),
-                    is_own=(int(sender_id) == self.current_user.id if sender_id and self.current_user else False)
-                )
-                
-                # Add to messages and update display
-                self.messages.append(message)
-                self.update_messages_display()
-                self.scroll_to_bottom()
-                
-                # Update group info
-                self.current_group.last_message = text[:50] + ("..." if len(text) > 50 else "")
-                self.current_group.last_message_time = "just now"
-            else:
-                # Update unread count for this group
-                for group in self.groups:
-                    if group.id == int(chat_id):
-                        group.unread_count += 1
-                        group.last_message = text[:50] + ("..." if len(text) > 50 else "")
-                        group.last_message_time = "just now"
-                        self.update_chat_list()
-                        break
-                
-                # Show notification
-                sender_name = self.get_user_name(sender_id)
-                self.show_notification(sender_name, text, chat_id)
-            
-            # Update groups list
-            QTimer.singleShot(1000, self.load_groups)
-            
-        except Exception as e:
-            print(f"Error handling IM message: {e}")
     
     def handle_pull_connection_status(self, params: dict):
         """Handle connection status updates from Pull client"""

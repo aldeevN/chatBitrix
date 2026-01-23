@@ -693,15 +693,7 @@ class BitrixPullClient(QThread):
             try:
                 text_data = binary_data.decode('utf-8', errors='ignore')
                 if text_data.strip():
-                    print(f"  Decoded as UTF-8: {len(text_data)} characters")
                     self.process_text_message(text_data)
-                else:
-                    # Try Base64
-                    try:
-                        base64_str = base64.b64encode(binary_data[:100]).decode('utf-8')
-                        print(f"  Base64 preview: {base64_str}")
-                    except:
-                        print(f"  Raw binary data")
             except Exception as decode_error:
                 print(f"  ✗ Error decoding binary: {decode_error}")
                 # Still emit raw message for analysis
@@ -732,8 +724,6 @@ class BitrixPullClient(QThread):
             if not text_data:
                 print("  Empty message, skipping")
                 return
-            
-            print(f"  Content preview: {text_data[:2000]}...")
             
             # Try to parse as JSON
             try:
@@ -770,44 +760,8 @@ class BitrixPullClient(QThread):
     def handle_json_message(self, data):
         """Handle JSON message"""
         try:
-            method = data.get('method')
-            params = data.get('params', {})
-            message_id = data.get('id')
-            
-            print(f"\n📨 Processing JSON-RPC message")
-            print(f"  Method: {method}")
-            print(f"  Message ID: {message_id}")
-            print(f"  Has params: {'yes' if params else 'no'}")
-            
-            if method == 'message':
-                # Handle actual message
-                print(f"  ↳ Handling message notification")
-                self.handle_incoming_message(params)
-            elif method == 'ping':
-                # Respond to ping
-                print(f"  ↳ Responding to ping")
-                if self.ws:
-                    pong_response = {
-                        "jsonrpc": "2.0",
-                        "result": "pong",
-                        "id": message_id
-                    }
-                    pong_json = json.dumps(pong_response)
-                    self.ws.send(pong_json)
-                    self.bytes_sent += len(pong_json)
-            elif method == 'result':
-                # Handle result
-                result = data.get('result', {})
-                print(f"  ↳ Processing result")
-                print(f"  Result: {result}")
-            elif method == 'error':
-                # Handle error
-                error = data.get('error', {})
-                print(f"  ↳ Processing error")
-                print(f"  Error: {error}")
-            else:
-                # Unknown method, emit for handling
-                print(f"  ↳ Emitting unknown method")
+            method = data.get('id')
+            if method:
                 self.message_received.emit({
                     'type': 'jsonrpc',
                     'method': method,
