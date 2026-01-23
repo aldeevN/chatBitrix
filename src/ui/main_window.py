@@ -1332,7 +1332,7 @@ class TelegramChatWindow(QMainWindow):
         if not text or not self.current_group:
             return
         
-        self.message_input.setPlainText(text)
+        self.message_input.text(text)
         self.send_message()
     
     def apply_current_theme(self):
@@ -1473,45 +1473,21 @@ class TelegramChatWindow(QMainWindow):
     
     def handle_pull_message(self, message_data: dict):
         """Handle messages from Pull client"""
-        message_type = message_data.get('type', '')
-        data = message_data.get('data', {})
-        
-        print(f"Pull message: {message_data}")
-        
-# Pull message: {'type': 'jsonrpc', 'method': None, 'data': {'id': 179, 'mid': '17515572610000000000000179', 'channel': '-', 'tag': '281', 'time': 'Thu, 22 Jan 2026 07:30:38 GMT', 'text': {'module_id': 'uad.shop.chat', 'command': 'newMessage', 'params': {'author': 'Аким Пономарев', 'message': 'fdsfd', 'group': {'touch': '08:20', 'author_name': 'Нургали Алдеев', 'title': 'something', 'importance': 'normal', 'isActive': False, 'members': [], 'managersCount': 0, 'customersCount': 0, 'target': {'ID': '632', 'XML_ID': '632#Akim#Пономарев Аким ', 'NAME': 'Аким', 'LAST_NAME': 'Пономарев', 'SECOND_NAME': '', 'EMAIL': 'ugautodetal0@mail.ru', 'PERSONAL_PHONE': '+79604968609', 'PERSONAL_MOBILE': '+79604968609', 'PERSONAL_STATE': '', 'PERSONAL_CITY': '', 'PERSONAL_STREET': '', 'PERSONAL_ZIP': ''}, 'meta': {'pinned': 'false'}, 'notifications': 0, 'type': 'messageGroup', 'id': '133', 'author': '2611', 'date': '2025-08-12T08:20:27+03:00', 'props': '{"touch":"22.01.26 10:22:21","author_name":"Нургали Алдеев","title":"something","importance":"normal"}', 'state': None, 'site': 'ap', 'sub_id': '319', 'sub_ctgroup': '133', 'sub_ctmember': '632', 'sub_role': 'target', 'sub_moderator': None, 'sub_date': '2025-08-12T08:20:27+03:00'}}, 'extra': {'server_time': '2026-01-22T10:30:38+03:00', 'server_time_unix': 1769067038.270975, 'server_name': 'www.ugavtopart.ru', 'revision_web': 19, 'revision_mobile': 3}}}}
 
-        if message_type == 'uad.shop.chat.newMessage':
-            self.handle_uad_new_message(data.get('params', {}))
-        elif message_type == 'im.message':
-            self.handle_im_message(data.get('params', {}))
-        elif message_type == 'im.typing':
-            # Typing indicator disabled
-            pass
-        elif message_type == 'im.read':
-            self.handle_read_receipt(data.get('params', {}))
-        elif message_type == 'im.chat_update':
-            self.handle_chat_update(data.get('params', {}))
-        elif message_type == 'pull.channel_replaced':
-            print("Channel replaced, client will reconnect automatically")
-        elif message_type == 'pull.config_expired':
-            print("Config expired, client will reload")
-        elif message_type == 'pull.revision_changed':
-            self.handle_revision_changed(data.get('params', {}))
-        elif message_type == 'pull.connection_status':
-            self.handle_pull_connection_status(data.get('params', {}))
+        self.handle_uad_new_message(message_data)
+        
     
     def handle_uad_new_message(self, params: dict):
         """Handle new message from uad.shop.chat module"""
-        print('msg from pull' , params)
+        msg_data = params["data"]["text"]["params"]
+        print(type(msg_data), msg_data)
         try:
-            author = params.get('author', '')
-            message_text = params.get('message', '')
-            group = params.get('group', {})
+            message_text = msg_data.get('message', '')
+            group = msg_data.get('group')
+            author = msg_data.get('author', '')
             group_id = group.get('id')
-            author_id = group.get('author')  # Extract sender_id from group.author
-            group_date = group.get('date')  # Extract timestamp
-            
-            print(f"New uad.shop.chat message from {author} (ID: {author_id}) in group {group_id}: {message_text[:50]}...")
+            author_id = group['author']  # Extract sender_id from group.author
+            group_date = msg_data.get('sub_date')  # Extract timestamp
             
             # Convert group_id to int if possible
             try:
