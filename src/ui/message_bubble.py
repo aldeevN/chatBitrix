@@ -15,6 +15,9 @@ from api.models import Message
 from .themes import get_theme_colors
 
 class MessageBubble(QWidget):
+
+    _last_sender_name = None
+
     def __init__(self, message: Message, is_dark: bool = False):
         super().__init__()
         self.message = message
@@ -30,7 +33,7 @@ class MessageBubble(QWidget):
         layout.setSpacing(4)
         
         # Sender name for group chats
-        if not self.message.is_own:
+        if MessageBubble._last_sender_name != self.message.sender_name:
             sender_label = QLabel(self.message.sender_name)
             sender_label.setStyleSheet(f"""
                 QLabel {{
@@ -41,6 +44,7 @@ class MessageBubble(QWidget):
                 }}
             """)
             layout.addWidget(sender_label)
+            MessageBubble._last_sender_name = self.message.sender_name
         
         # Message text
         text_label = QLabel(self.message.text)
@@ -52,6 +56,8 @@ class MessageBubble(QWidget):
                 font-size: 14px;
                 line-height: 1.4;
                 background-color: transparent;
+                max-width: 50%;
+                border: 1px solid {self.colors['BORDER']};
             }}
         """)
         layout.addWidget(text_label)
@@ -83,6 +89,8 @@ class MessageBubble(QWidget):
                     color: {self.colors['PRIMARY']};
                     font-size: 11px;
                     margin-left: 4px;
+                    border-radius: 12px;
+                    border-top-left-radius: 4px;
                 }}
             """)
             footer_layout.addWidget(status_label)
