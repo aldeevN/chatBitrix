@@ -136,8 +136,8 @@ class BitrixPullClient(QThread):
                 print(f"✓ Loaded bitrix_token.json ({len(auth_data)} items)")
                 
                 # Extract Pull configuration
-                local_storage = auth_data.get('local_storage', {})
-                print(f"✓ Local storage items: {len(local_storage)}")
+                local_storage = auth_data['storage'].get('local_storage', {})
+                print(f"✓ Local storage items: {len(local_storage)}", local_storage)
                 
                 # Find Pull config key
                 pull_config_found = False

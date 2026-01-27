@@ -238,7 +238,7 @@ class ChromeAuthApp:
             print(f"\n✅ SUCCESS!")
             print(f"   Token: {token[:30]}...")
             print(f"   User ID: {user_id}")
-            self.save_token_to_file(token, user_id, csrf_token, site_id)
+            self.save_token_to_file_with_storage(token, user_id, csrf_token, site_id)
             return token, user_id
         else:
             print("❌ Failed to get API token")
@@ -321,13 +321,12 @@ class ChromeAuthApp:
         user_id = None
         
         if result and result.get('status') == 'success' and result.get('data'):
-
             token = result['data'].get('PASSWORD')
             user_id = result['data'].get('USER_ID')
         
         if not token:
             user_id = self.extract_user_id()
-        time.sleep(300)
+        
         return token, user_id
     
     def extract_user_id(self):
@@ -367,9 +366,103 @@ class ChromeAuthApp:
         print(f"   ✅ User ID: {user_id}")
         return user_id
     
-    def save_token_to_file(self, token, user_id, csrf_token, site_id):
-        """Save token to files (.env and JSON)"""
+    def get_local_storage_data(self):
+        """Extract local storage data from browser"""
+        print("\n6. Extracting local storage data...")
+        
         try:
+            # JavaScript to get all local storage items
+            local_storage_js = """
+            var items = {};
+            for (var i = 0; i < localStorage.length; i++) {
+                var key = localStorage.key(i);
+                var value = localStorage.getItem(key);
+                
+                // Only save Bitrix-related items to avoid storing too much data
+                if (key.toLowerCase().includes('bitrix') || 
+                    key.toLowerCase().includes('bx') ||
+                    key.includes('USER') ||
+                    key.includes('SESSION') ||
+                    key.includes('AUTH')) {
+                    items[key] = value;
+                }
+            }
+            return items;
+            """
+            
+            local_storage = self.driver.execute_script(local_storage_js)
+            
+            print(f"   Found {len(local_storage)} Bitrix-related local storage items")
+            
+            # Get some session storage items too
+            session_storage_js = """
+            var items = {};
+            for (var i = 0; i < sessionStorage.length; i++) {
+                var key = sessionStorage.key(i);
+                var value = sessionStorage.getItem(key);
+                
+                if (key.toLowerCase().includes('bitrix') || 
+                    key.toLowerCase().includes('bx') ||
+                    key.includes('USER') ||
+                    key.includes('SESSION')) {
+                    items[key] = value;
+                }
+            }
+            return items;
+            """
+            
+            session_storage = self.driver.execute_script(session_storage_js)
+            print(f"   Found {len(session_storage)} Bitrix-related session storage items")
+            
+            # Combine both
+            all_storage = {
+                'local_storage': local_storage,
+                'session_storage': session_storage,
+                'timestamp': time.time(),
+                'user_agent': self.driver.execute_script("return navigator.userAgent;"),
+                'url': self.driver.current_url
+            }
+            
+            return all_storage
+            
+        except Exception as e:
+            print(f"   ⚠️  Could not extract local storage: {e}")
+            return {}
+    
+    def get_local_storage(self):
+        """Get local storage data from .env file"""
+        try:
+            env_path = Path('.env')
+            if not env_path.exists():
+                return {}
+            
+            local_storage_json = None
+            session_storage_json = None
+            
+            with open(env_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    if line.startswith('BITRIX_LOCAL_STORAGE='):
+                        local_storage_json = line.split('=', 1)[1].strip()
+                    elif line.startswith('BITRIX_SESSION_STORAGE='):
+                        session_storage_json = line.split('=', 1)[1].strip()
+            
+            result = {}
+            if local_storage_json:
+                result['local_storage'] = json.loads(local_storage_json)
+            if session_storage_json:
+                result['session_storage'] = json.loads(session_storage_json)
+            
+            return result
+        except Exception as e:
+            print(f"⚠️  Could not load local storage from .env: {e}")
+            return {}
+    
+    def save_token_to_file_with_storage(self, token, user_id, csrf_token, site_id):
+        """Save token to files (.env and JSON) with local storage"""
+        try:
+            # Get local storage data
+            storage_data = self.get_local_storage_data()
+            
             # Save to .env file
             env_path = Path('.env')
             env_content = []
@@ -377,37 +470,65 @@ class ChromeAuthApp:
             if env_path.exists():
                 with open(env_path, 'r', encoding='utf-8') as f:
                     for line in f:
-                        if not any(line.startswith(key) for key in ['BITRIX_REST_TOKEN=', 'BITRIX_USER_ID=']):
+                        if not any(line.startswith(key) for key in ['BITRIX_REST_TOKEN=', 'BITRIX_USER_ID=', 
+                                                                    'BITRIX_LOCAL_STORAGE=', 'BITRIX_SESSION_STORAGE=',
+                                                                    'BITRIX_API_URL=', 'BITRIX_SITE_ID=']):
                             env_content.append(line.rstrip())
             
             env_content.append(f"BITRIX_REST_TOKEN={token}")
             env_content.append(f"BITRIX_USER_ID={user_id}")
             env_content.append(f"BITRIX_API_URL=https://ugautodetal.ru")
             env_content.append(f"BITRIX_SITE_ID={site_id}")
-            env_content.append(app.get_local_storage() if hasattr(app, 'get_local_storage') else {})
-
+            
+            # Save local storage (encoded to avoid newline issues)
+            if storage_data.get('local_storage'):
+                local_storage_json = json.dumps(storage_data['local_storage'], separators=(',', ':'))
+                env_content.append(f"BITRIX_LOCAL_STORAGE={local_storage_json}")
+            
+            # Save session storage
+            if storage_data.get('session_storage'):
+                session_storage_json = json.dumps(storage_data['session_storage'], separators=(',', ':'))
+                env_content.append(f"BITRIX_SESSION_STORAGE={session_storage_json}")
             
             with open(env_path, 'w', encoding='utf-8') as f:
                 f.write('\n'.join(env_content))
             
             print(f"\n   ✅ Saved to .env")
+            print(f"   - Token, User ID, CSRF token, Site ID")
+            print(f"   - Local storage: {len(storage_data.get('local_storage', {}))} items")
+            print(f"   - Session storage: {len(storage_data.get('session_storage', {}))} items")
             
-            # Save to JSON file
+            # Save to JSON file with full data
             auth_data = {
                 'token': token,
                 'user_id': user_id,
                 'csrf_token': csrf_token,
                 'site_id': site_id,
+                'storage': storage_data,
+                'cookies': self.get_cookies(),
                 'timestamp': time.time()
             }
             
             with open('bitrix_token.json', 'w', encoding='utf-8') as f:
-                json.dump(auth_data, f, indent=2)
+                json.dump(auth_data, f, indent=2, ensure_ascii=False)
             
-            print(f"   ✅ Saved to bitrix_token.json")
+            print(f"   ✅ Saved full data to bitrix_token.json")
+            
+            # Also save to a pickle file for easier loading
+            with open('bitrix_auth.pkl', 'wb') as f:
+                pickle.dump({
+                    'token': token,
+                    'user_id': user_id,
+                    'cookies': self.driver.get_cookies(),
+                    'local_storage': storage_data.get('local_storage', {}),
+                    'session_storage': storage_data.get('session_storage', {})
+                }, f)
+            
+            print(f"   ✅ Saved to bitrix_auth.pkl")
             
         except Exception as e:
-            print(f"   ⚠️  Warning: Could not save token to file: {e}")
+            print(f"   ⚠️  Warning: Could not save all data to file: {e}")
+            traceback.print_exc()
     
     def get_cookies(self):
         """Get all cookies from browser"""
