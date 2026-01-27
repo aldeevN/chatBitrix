@@ -1468,6 +1468,7 @@ class TelegramChatWindow(QMainWindow):
     
     def periodic_update(self):
         print("Periodic update...")
+        self.handle_pull_connection_status({"status": self.pull_client.status})
         self.load_groups()
         if self.current_group:
             self.load_messages(self.current_group.id)
@@ -1487,7 +1488,7 @@ class TelegramChatWindow(QMainWindow):
             group = msg_data.get('group')
             author = msg_data.get('author', '')
             group_id = group.get('id')
-            author_id = group.get(['sub_ctmember'], msg_data['author'])  # Extract sender_id from group.author
+            author_id = group.get('sub_ctmember') if group.get('sub_ctmember') else group['author']
             group_date = msg_data.get('sub_date')  # Extract timestamp
             
             # Convert group_id to int if possible
@@ -1498,7 +1499,6 @@ class TelegramChatWindow(QMainWindow):
             
             # Convert author_id to int if possible
             try:
-                print(author_id)
                 author_id_int = int(author_id) if author_id else 0
             except:
                 author_id_int = 0

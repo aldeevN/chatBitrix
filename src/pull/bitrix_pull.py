@@ -183,60 +183,6 @@ class BitrixPullClient(QThread):
                         if 'bx-pull' in key:
                             print(f"  - {key}")
                 
-                # If no config found, try to create minimal config
-                print("\nCreating minimal Pull configuration from auth data...")
-                
-                # Extract important cookies for authentication
-                cookies = auth_data.get('cookies', {})
-                print(f"✓ Cookies available: {len(cookies)}")
-                print("Important cookies:")
-                for cookie_name in cookies.keys():
-                    if any(keyword in cookie_name.lower() for keyword in 
-                          ['bitrix_', 'phpsessid', 'sid_', 'bx_user_id', 'login_hash']):
-                        print(f"  - {cookie_name}")
-                
-                # Create minimal config
-                server_config = {
-                    'websocket': 'wss://ugautodetal.ru/bitrix/subws/',
-                    'websocket_secure': 'wss://ugautodetal.ru/bitrix/subws/',
-                    'long_polling': 'http://ugautodetal.ru/bitrix/sub/',
-                    'long_pooling_secure': 'https://ugautodetal.ru/bitrix/sub/',
-                    'publish': 'https://ugautodetal.ru/bitrix/rest/',
-                    'publish_secure': 'https://ugautodetal.ru/bitrix/rest/',
-                    'hostname': 'www.ugavtopart.ru',
-                    'websocket_enabled': True
-                }
-                
-                # Create channel ID
-                timestamp = int(time.time())
-                random_part = hashlib.md5(f"{self.user_id}{timestamp}{random.random()}".encode()).hexdigest()
-                channel_id = f"{random_part}:{hashlib.sha1(f'private{self.user_id}'.encode()).hexdigest()}"
-                
-                pull_config = {
-                    'server': server_config,
-                    'channels': {
-                        'private': {
-                            'id': channel_id,
-                            'start': timestamp,
-                            'end': timestamp + 43200,
-                            'type': 'private'
-                        }
-                    },
-                    'api': {
-                        'revision_web': 19,
-                        'revision_mobile': 3
-                    }
-                }
-                
-                print(f"✓ Created minimal Pull config with channel ID: {channel_id[:30]}...")
-                
-                return {
-                    'user_id': self.user_id,
-                    'pull_config': pull_config,
-                    'cookies': cookies,
-                    'local_storage': local_storage,
-                    'session_storage': auth_data.get('session_storage', {})
-                }
             else:
                 print("✗ bitrix_token.json not found")
             
