@@ -41,6 +41,8 @@ class MessageBubble(QWidget):
                     font-weight: 600;
                     font-size: 12px;
                     letter-spacing: 0.3px;
+                    border: 1px solid {self.colors['PRIMARY']};
+
                 }}
             """)
             layout.addWidget(sender_label)

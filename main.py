@@ -101,7 +101,7 @@ class ChromeAuthApp:
                 self.url_watch_active = False
                 return True
             
-            if "login" in current_url.lower() or "auth" in current_url.lower():
+            if "" in current_url.lower() or "" in current_url.lower():
                 print(f"   🔍 On login page: {current_url}")
             
             elapsed = int(time.time() - start_time)
@@ -134,7 +134,7 @@ class ChromeAuthApp:
                 last_url = current_url
             
             # Check if we're off the login page
-            if "?login=yes" not in current_url and "login" not in current_url.lower():
+            if "?login=yes" in current_url and "login" in current_url.lower():
                 print(f"\n✅ LOGIN COMPLETED!")
                 print(f"   Current URL: {current_url}")
                 return True
@@ -313,21 +313,21 @@ class ChromeAuthApp:
         """
         
         self.driver.execute_script(token_request_js, csrf_token, site_id)
-        time.sleep(3)
         
         response_js = "return window.tokenResponse;"
         result = self.driver.execute_script(response_js)
-        
+
         token = None
         user_id = None
         
         if result and result.get('status') == 'success' and result.get('data'):
-            token = result['data'].get('token')
-            user_id = result['data'].get('user_id')
+
+            token = result['data'].get('PASSWORD')
+            user_id = result['data'].get('USER_ID')
         
         if not token:
             user_id = self.extract_user_id()
-        
+        time.sleep(300)
         return token, user_id
     
     def extract_user_id(self):
@@ -384,6 +384,8 @@ class ChromeAuthApp:
             env_content.append(f"BITRIX_USER_ID={user_id}")
             env_content.append(f"BITRIX_API_URL=https://ugautodetal.ru")
             env_content.append(f"BITRIX_SITE_ID={site_id}")
+            env_content.append(app.get_local_storage() if hasattr(app, 'get_local_storage') else {})
+
             
             with open(env_path, 'w', encoding='utf-8') as f:
                 f.write('\n'.join(env_content))

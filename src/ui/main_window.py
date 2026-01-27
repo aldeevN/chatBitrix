@@ -1487,7 +1487,7 @@ class TelegramChatWindow(QMainWindow):
             group = msg_data.get('group')
             author = msg_data.get('author', '')
             group_id = group.get('id')
-            author_id = group['sub_ctmember']  # Extract sender_id from group.author
+            author_id = group.get(['sub_ctmember'], msg_data['author'])  # Extract sender_id from group.author
             group_date = msg_data.get('sub_date')  # Extract timestamp
             
             # Convert group_id to int if possible
