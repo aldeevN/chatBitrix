@@ -20,175 +20,30 @@ import sys
 import time
 import json
 import pickle
+import subprocess
 import traceback
 import argparse
 from pathlib import Path
 from typing import Optional, Tuple
-
-# ============================================================================
-# CRITICAL: Set Qt platform plugin path BEFORE any PyQt5 imports
-# This section MUST come before ANY other imports
-# ============================================================================
-
-def setup_qt_plugins():
-    """Setup Qt plugin paths for different environments"""
-    # Check if we're running as a PyInstaller executable
-    if getattr(sys, 'frozen', False):
-        # Running as compiled executable
-        application_path = sys._MEIPASS
-        plugin_path = os.path.join(application_path, 'PyQt5', 'Qt5', 'plugins', 'platforms')
-        if os.path.exists(plugin_path):
-            os.environ['QT_QPA_PLUGIN_PATH'] = plugin_path
-            os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = plugin_path
-            print(f"📦 PyInstaller mode - Plugin path: {plugin_path}")
-            return True
-        else:
-            # Try alternative location
-            plugin_path = os.path.join(application_path, 'platforms')
-            if os.path.exists(plugin_path):
-                os.environ['QT_QPA_PLUGIN_PATH'] = plugin_path
-                os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = plugin_path
-                print(f"📦 PyInstaller mode - Plugin path (alt): {plugin_path}")
-                return True
-    
-    # Normal Python script mode
-    print("🔍 Setting up Qt plugins for normal Python mode...")
-    
-    # Method 1: Try to find PyQt5 package
-    try:
-        import site
-        import importlib.util
-        
-        # Get all possible site-packages directories
-        site_packages_paths = []
-        site_packages_paths.extend(site.getsitepackages())
-        
-        # Add user site-packages
-        if hasattr(site, 'getusersitepackages'):
-            user_site = site.getusersitepackages()
-            if user_site:
-                site_packages_paths.append(user_site)
-        
-        # Add virtual environment paths
-        if hasattr(sys, 'real_prefix'):  # virtualenv
-            site_packages_paths.append(os.path.join(sys.prefix, 'lib', f'python{sys.version_info.major}.{sys.version_info.minor}', 'site-packages'))
-        elif hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix:  # venv
-            site_packages_paths.append(os.path.join(sys.prefix, 'lib', f'python{sys.version_info.major}.{sys.version_info.minor}', 'site-packages'))
-        
-        # Add current Python path directories
-        for path in sys.path:
-            if 'site-packages' in path and path not in site_packages_paths:
-                site_packages_paths.append(path)
-        
-        print(f"📁 Searching {len(site_packages_paths)} site-packages locations...")
-        
-        # Search for PyQt5 in all site-packages directories
-        for site_pkg in site_packages_paths:
-            if not os.path.exists(site_pkg):
-                continue
-                
-            # Look for PyQt5 directory
-            pyqt5_path = os.path.join(site_pkg, 'PyQt5')
-            if os.path.exists(pyqt5_path):
-                # Try multiple possible plugin locations
-                possible_plugin_paths = [
-                    os.path.join(pyqt5_path, 'Qt5', 'plugins', 'platforms'),
-                    os.path.join(pyqt5_path, 'Qt', 'plugins', 'platforms'),
-                    os.path.join(pyqt5_path, 'plugins', 'platforms'),
-                ]
-                
-                for plugin_path in possible_plugin_paths:
-                    if os.path.exists(plugin_path):
-                        os.environ['QT_QPA_PLUGIN_PATH'] = plugin_path
-                        os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = plugin_path
-                        print(f"✅ Found Qt plugins at: {plugin_path}")
-                        return True
-        
-    except Exception as e:
-        print(f"⚠️  Could not search site-packages: {e}")
-    
-    # Method 2: Try to import PyQt5 and find its path
-    try:
-        import PyQt5
-        pyqt5_dir = os.path.dirname(PyQt5.__file__)
-        
-        # Try different possible plugin locations
-        possible_paths = [
-            os.path.join(pyqt5_dir, 'Qt5', 'plugins', 'platforms'),
-            os.path.join(pyqt5_dir, 'Qt', 'plugins', 'platforms'),
-            os.path.join(pyqt5_dir, 'plugins', 'platforms'),
-            os.path.join(os.path.dirname(pyqt5_dir), 'PyQt5', 'Qt5', 'plugins', 'platforms'),
-        ]
-        
-        for plugin_path in possible_paths:
-            if os.path.exists(plugin_path):
-                os.environ['QT_QPA_PLUGIN_PATH'] = plugin_path
-                os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = plugin_path
-                print(f"✅ Found Qt plugins via PyQt5 import: {plugin_path}")
-                return True
-        
-        # If we found PyQt5 but not plugins, try to use PyQt5's QLibraryInfo
-        try:
-            from PyQt5.QtCore import QLibraryInfo
-            plugin_path = QLibraryInfo.location(QLibraryInfo.PluginsPath)
-            if os.path.exists(plugin_path):
-                os.environ['QT_QPA_PLUGIN_PATH'] = plugin_path
-                os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = plugin_path
-                print(f"✅ Found Qt plugins via QLibraryInfo: {plugin_path}")
-                return True
-        except:
-            pass
-            
-    except ImportError:
-        print("⚠️  PyQt5 not installed yet, will be imported later")
-    
-    # Method 3: Common installation locations
-    print("🔍 Trying common installation locations...")
-    common_paths = []
-    
-    # Windows common paths
-    if sys.platform == 'win32':
-        import glob
-        # Python installation directories
-        python_dirs = [
-            os.path.dirname(sys.executable),
-            sys.prefix,
-            os.path.expanduser('~'),
-        ]
-        
-        for python_dir in python_dirs:
-            common_paths.extend([
-                os.path.join(python_dir, 'Lib', 'site-packages', 'PyQt5', 'Qt5', 'plugins', 'platforms'),
-                os.path.join(python_dir, 'Lib', 'site-packages', 'PyQt5', 'Qt', 'plugins', 'platforms'),
-                os.path.join(python_dir, 'AppData', 'Roaming', 'Python', f'Python{sys.version_info.major}{sys.version_info.minor}', 'site-packages', 'PyQt5', 'Qt5', 'plugins', 'platforms'),
-                os.path.join(python_dir, 'Local', 'Programs', 'Python', f'Python{sys.version_info.major}{sys.version_info.minor}', 'Lib', 'site-packages', 'PyQt5', 'Qt5', 'plugins', 'platforms'),
-            ])
-    
-    # Linux/Mac common paths
-    else:
-        home = os.path.expanduser('~')
-        common_paths.extend([
-            os.path.join(home, '.local', 'lib', f'python{sys.version_info.major}.{sys.version_info.minor}', 'site-packages', 'PyQt5', 'Qt5', 'plugins', 'platforms'),
-            f'/usr/lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages/PyQt5/Qt5/plugins/platforms',
-            f'/usr/local/lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages/PyQt5/Qt5/plugins/platforms',
-        ])
-    
-    for plugin_path in common_paths:
-        if os.path.exists(plugin_path):
-            os.environ['QT_QPA_PLUGIN_PATH'] = plugin_path
-            os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = plugin_path
-            print(f"✅ Found Qt plugins at common location: {plugin_path}")
-            return True
-    
-    print("⚠️  Could not find Qt plugins automatically. The app might need PyQt5 installation.")
-    print("💡 Try running: pip install PyQt5 PyQtWebEngine")
-    return False
-
-# Run the Qt plugin setup
-qt_plugins_found = setup_qt_plugins()
-
-# Now we can safely import dotenv
+from urllib.parse import urlparse, parse_qs
 from dotenv import load_dotenv
+
+# Selenium imports for browser automation
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
+
+# PyQt5 imports
+from PyQt5.QtWidgets import QApplication
+
+# Add src to path for imports
+sys.path.insert(0, str(Path(__file__).parent / "src"))
+
+from ui.main_window import TelegramChatWindow
+from api.bitrix_api import BitrixAPI
+
 
 # ============================================================================
 # SECTION 1: CHROME AUTHENTICATION APPLICATION
@@ -198,11 +53,6 @@ class ChromeAuthApp:
     """Browser automation for Bitrix24 authentication"""
     
     def __init__(self, headless=False):
-        # Import selenium here to avoid issues if Qt has problems
-        from selenium import webdriver
-        from selenium.webdriver.chrome.options import Options
-        from selenium.webdriver.support.ui import WebDriverWait
-        
         self.chrome_options = Options()
         
         if not headless:
@@ -251,7 +101,7 @@ class ChromeAuthApp:
                 self.url_watch_active = False
                 return True
             
-            if "login" in current_url.lower() or "auth" in current_url.lower():
+            if "" in current_url.lower() or "" in current_url.lower():
                 print(f"   🔍 On login page: {current_url}")
             
             elapsed = int(time.time() - start_time)
@@ -284,7 +134,7 @@ class ChromeAuthApp:
                 last_url = current_url
             
             # Check if we're off the login page
-            if "?login=yes" not in current_url and "login" not in current_url.lower():
+            if "?login=yes" in current_url and "login" in current_url.lower():
                 print(f"\n✅ LOGIN COMPLETED!")
                 print(f"   Current URL: {current_url}")
                 return True
@@ -776,42 +626,15 @@ def start_chat(token: str, user_id: int) -> None:
         os.environ['BITRIX_API_URL'] = 'https://ugautodetal.ru'
         os.environ['SKIP_AUTH_CHECK'] = '1'
         
-        # Import PyQt5 modules here, after environment variables are set
-        from PyQt5.QtWidgets import QApplication
-        
-        # Add src to path for imports
-        src_dir = Path(__file__).parent / "src"
-        if src_dir.exists():
-            sys.path.insert(0, str(src_dir))
-        
-        from ui.main_window import TelegramChatWindow
-        from api.bitrix_api import BitrixAPI
-        
         # Initialize API client
         print(f"\n🔌 Initializing REST API client...")
         api_client = BitrixAPI(user_id=user_id, token=token, base_domain="https://ugautodetal.ru")
         print("✅ REST API client initialized")
         
-        # Final check for Qt plugins
-        if not os.environ.get('QT_QPA_PLATFORM_PLUGIN_PATH'):
-            print("⚠️  Qt plugin path not set, trying one more time...")
-            # Try to use PyQt5's built-in method
-            try:
-                from PyQt5.QtCore import QLibraryInfo
-                plugin_path = QLibraryInfo.location(QLibraryInfo.PluginsPath)
-                if os.path.exists(plugin_path):
-                    os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = plugin_path
-                    print(f"✅ Set Qt plugin path via QLibraryInfo: {plugin_path}")
-            except Exception as e:
-                print(f"⚠️  Could not set Qt plugin path: {e}")
-                print("💡 Make sure PyQt5 is installed: pip install PyQt5")
-        
         # Create PyQt5 application
-        print("🚀 Creating Qt application...")
         app = QApplication(sys.argv)
         
         # Create and show main window
-        print("🖼️  Creating main window...")
         window = TelegramChatWindow()
         window.show()
         
@@ -830,11 +653,6 @@ def start_chat(token: str, user_id: int) -> None:
         
         sys.exit(app.exec_())
     
-    except ImportError as e:
-        print(f"\n❌ Missing required module: {e}")
-        print("💡 Install required packages with:")
-        print("  pip install PyQt5 PyQtWebEngine selenium python-dotenv")
-        sys.exit(1)
     except Exception as e:
         print(f"\n❌ Error starting chat application: {e}")
         traceback.print_exc()
