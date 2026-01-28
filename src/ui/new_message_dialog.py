@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont
 
-from api.models import User, Customer, Group
+from src.api.models import User, Customer, Group
 from .themes import get_theme_colors
 
 class NewMessageDialog(QDialog):

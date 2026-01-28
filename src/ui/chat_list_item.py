@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QMouseEvent
 
-from api.models import Group, User, Customer
+from src.api.models import Group, User, Customer
 from .themes import get_theme_colors
 
 class ChatListItem(QWidget):

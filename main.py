@@ -41,8 +41,8 @@ from PyQt5.QtWidgets import QApplication
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from ui.main_window import TelegramChatWindow
-from api.bitrix_api import BitrixAPI
+from src.ui.main_window import TelegramChatWindow
+from src.api.bitrix_api import BitrixAPI
 
 
 # ============================================================================

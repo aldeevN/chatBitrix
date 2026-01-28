@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt
 
-from api.models import Message
+from src.api.models import Message
 from .themes import get_theme_colors
 
 class MessageBubble(QWidget):

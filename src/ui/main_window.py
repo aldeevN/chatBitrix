@@ -16,21 +16,21 @@ from PyQt5.QtWidgets import (
     QFileDialog, QDialog, QStatusBar, QApplication, QLineEdit
 )
 from PyQt5.QtCore import (
-    Qt, QTimer, pyqtSignal, pyqtSlot
+    Qt, QTimer, pyqtSignal
 )
 from PyQt5.QtGui import QFont
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from api.bitrix_api import BitrixAPI
-from api.models import User, Customer, Group, Message
-from pull.bitrix_pull import BitrixPullClient
-from ui.widgets import TelegramButton, TelegramInput, TelegramSearchBar
-from ui.chat_list_item import ChatListItem
-from ui.message_bubble import MessageBubble
-from ui.new_message_dialog import NewMessageDialog
-from ui.themes import COLORS, apply_theme, get_theme_colors
+from src.api.bitrix_api import BitrixAPI
+from src.api.models import User, Customer, Group, Message
+from src.pull.bitrix_pull import BitrixPullClient
+from src.ui.widgets import TelegramButton, TelegramInput, TelegramSearchBar
+from src.ui.chat_list_item import ChatListItem
+from src.ui.message_bubble import MessageBubble
+from src.ui.new_message_dialog import NewMessageDialog
+from src.ui.themes import COLORS, apply_theme, get_theme_colors
 
 class TelegramChatWindow(QMainWindow):
     def __init__(self):
