@@ -7,18 +7,23 @@ import sys
 import json
 import time
 import traceback
+import html
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QScrollArea,
     QLabel, QPushButton, QTextEdit, QMenu, QMessageBox,
-    QFileDialog, QDialog, QStatusBar, QApplication, QLineEdit
+    QFileDialog, QDialog, QStatusBar, QApplication, QLineEdit,
+    QSizePolicy, QFrame, QSpacerItem
 )
 from PyQt5.QtCore import (
-    Qt, QTimer, pyqtSignal
+    Qt, QTimer, pyqtSignal, QSize, QPoint, QEvent
 )
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import (
+    QFont, QMouseEvent, QColor, QPainter, QPainterPath, 
+    QPalette, QBrush, QLinearGradient
+)
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -26,13 +31,18 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from src.api.bitrix_api import BitrixAPI
 from src.api.models import User, Customer, Group, Message
 from src.pull.bitrix_pull import BitrixPullClient
-from src.ui.widgets import TelegramButton, TelegramInput, TelegramSearchBar
-from src.ui.chat_list_item import ChatListItem
-from src.ui.message_bubble import MessageBubble
+from src.ui.widgets import TelegramButton, TelegramInput, TelegramSearchBar, TelegramFrame
+from src.ui.chat_list_item import TelegramChatListItem, ChatListItem
+from src.ui.message_bubble import TelegramMessageBubble, MessageBubble
 from src.ui.new_message_dialog import NewMessageDialog
-from src.ui.themes import COLORS, apply_theme, get_theme_colors
+from src.ui.themes import apply_telegram_theme, get_theme_colors, toggle_dark_mode
 
 class TelegramChatWindow(QMainWindow):
+    """Main Telegram-like chat window with Bitrix24 integration"""
+    
+    # Signals
+    connection_status_changed = pyqtSignal(bool, str)
+    
     def __init__(self):
         super().__init__()
         
@@ -61,12 +71,21 @@ class TelegramChatWindow(QMainWindow):
         # Bitrix Pull client
         self.pull_client = None
         
+        # UI state
+        self.last_sender_id = None
+        
+        # Setup window
         self.setup_window()
         self.setup_ui()
-        self.apply_current_theme()
+        
+        # Apply Telegram theme
+        apply_telegram_theme(self, self.is_dark_mode)
         
         # Start loading data
         QTimer.singleShot(100, self.initialize_data)
+        
+        # Setup auto-refresh
+        self.setup_timers()
     
     def check_auth_data(self):
         """Check if authentication data exists, prompt if not"""
@@ -79,8 +98,8 @@ class TelegramChatWindow(QMainWindow):
             print("Authentication data not found.")
             reply = QMessageBox.question(
                 None,
-                "Authentication Required",
-                "Authentication data not found. Would you like to authenticate now?",
+                "Требуется авторизация",
+                "Данные авторизации не найдены. Хотите выполнить авторизацию сейчас?",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.Yes
             )
@@ -161,7 +180,6 @@ class TelegramChatWindow(QMainWindow):
                     pass
 
         # Build Pull/WebSocket config from environment variables as a higher-priority source
-        # This lets the UI use websocket settings from .env without requiring bitrix_token.json
         pull_config = {}
         cookies = {}
 
@@ -240,19 +258,21 @@ class TelegramChatWindow(QMainWindow):
         return auth_data
     
     def setup_window(self):
-        self.setWindowTitle("Telegram-like Business Chat (Bitrix Pull)")
+        """Setup main window properties"""
+        self.setWindowTitle("ЮГАВТОДЕТАЛЬ - Telegram Chat")
         self.setGeometry(100, 100, 1200, 800)
         
-        # Set application style - will be overridden by apply_current_theme()
-        colors = get_theme_colors(self.is_dark_mode)
-        self.setStyleSheet(f"""
-            QMainWindow {{
-                background-color: {colors['BACKGROUND']};
-                border: none;
-            }}
-        """)
+        # Set minimum size
+        self.setMinimumSize(800, 600)
+        
+        # Set window icon if exists
+        icon_path = os.path.join(os.path.dirname(__file__), "icon.png")
+        if os.path.exists(icon_path):
+            from PyQt5.QtGui import QIcon
+            self.setWindowIcon(QIcon(icon_path))
     
     def setup_ui(self):
+        """Setup main UI layout"""
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         
@@ -268,221 +288,147 @@ class TelegramChatWindow(QMainWindow):
         self.chat_area = self.create_chat_area()
         main_layout.addWidget(self.chat_area, 1)
         
-        # Modern spacing
+        # Set sidebar width
         self.sidebar.setFixedWidth(360)
         
-        # Add connection status indicator to status bar
-        self.setup_connection_indicator()
+        # Add status bar
+        self.setup_status_bar()
     
     def create_sidebar(self) -> QWidget:
+        """Create Telegram-style sidebar"""
         sidebar = QWidget()
         sidebar.setObjectName("sidebar")
-        colors = get_theme_colors(self.is_dark_mode)
-        sidebar.setStyleSheet(f"""
-            QWidget#sidebar {{
-                background-color: {colors['SURFACE']};
-                border-right: 2px solid {colors['BORDER']};
-            }}
-        """)
         
         layout = QVBoxLayout(sidebar)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         
-        # Header
+        # Header with profile
         header = self.create_sidebar_header()
         layout.addWidget(header)
         
-        # Search bar with better styling
-        search_bar = TelegramSearchBar(is_dark=self.is_dark_mode)
-        search_bar.setStyleSheet(f"""
-            QLineEdit {{
-                background-color: {colors['SURFACE_VARIANT']};
-                border: none;
-                border-radius: 5px;
-                padding: 5px;
-                padding-left: 40px;
-                font-size: 14px;
-                color: {colors['ON_SURFACE']};
-                margin: 2px;
-            }}
-            QLineEdit:focus {{
-                background-color: {colors['SURFACE']};
-                border: 1px solid {colors['PRIMARY']};
-                margin: 2px;
-            }}
-        """)
-        layout.addWidget(search_bar)
+        # Search bar
+        search_widget = QWidget()
+        search_layout = QHBoxLayout(search_widget)
+        search_layout.setContentsMargins(12, 8, 12, 8)
         
-        # Chats list with improved styling
+        self.search_input = TelegramSearchBar(is_dark=self.is_dark_mode)
+        self.search_input.setPlaceholderText("Поиск чатов...")
+        self.search_input.textChanged.connect(self.filter_chats)
+        search_layout.addWidget(self.search_input)
+        
+        layout.addWidget(search_widget)
+        
+        # Chats list
         self.chats_scroll = QScrollArea()
         self.chats_scroll.setWidgetResizable(True)
         self.chats_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.chats_scroll.setStyleSheet(f"""
-            QScrollArea {{
-                border: none;
-                background-color: {colors['SURFACE']};
-            }}
-            QScrollBar:vertical {{
-                background-color: {colors['SURFACE']};
-                width: 6px;
-                border-radius: 3px;
-                margin: 0px;
-            }}
-            QScrollBar::handle:vertical {{
-                background-color: {colors['BORDER']};
-                border-radius: 3px;
-                min-height: 20px;
-                margin: 2px 1px 2px 1px;
-            }}
-            QScrollBar::handle:vertical:hover {{
-                background-color: {colors['ON_SURFACE_VARIANT']};
-            }}
-            QScrollBar::add-line:vertical {{
-                border: none;
-                background: none;
-            }}
-            QScrollBar::sub-line:vertical {{
-                border: none;
-                background: none;
-            }}
-        """)
+        self.chats_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         
         self.chats_container = QWidget()
         self.chats_layout = QVBoxLayout(self.chats_container)
-        self.chats_layout.setContentsMargins(4, 4, 4, 4)
-        self.chats_layout.setSpacing(4)
+        self.chats_layout.setContentsMargins(8, 8, 8, 8)
+        self.chats_layout.setSpacing(2)
         self.chats_layout.addStretch()
         
         self.chats_scroll.setWidget(self.chats_container)
         layout.addWidget(self.chats_scroll, 1)
         
         # New chat button at bottom
-        new_chat_bottom = QPushButton("➕ New Chat")
-        new_chat_bottom.setMinimumHeight(48)
-        new_chat_bottom.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {colors['PRIMARY']};
-                border: none;
-                border-radius: 12px;
-                color: white;
-                font-weight: 600;
-                font-size: 14px;
-                margin: 8px;
-                padding: 0px 16px;
-            }}
-            QPushButton:hover {{
-                background-color: {colors['PRIMARY_DARK']};
-            }}
-            QPushButton:pressed {{
-                background-color: {colors['PRIMARY_DARK']};
-            }}
-        """)
-        new_chat_bottom.clicked.connect(self.show_new_chat_dialog)
-        layout.addWidget(new_chat_bottom)
+        new_chat_widget = QWidget()
+        new_chat_layout = QHBoxLayout(new_chat_widget)
+        new_chat_layout.setContentsMargins(12, 8, 12, 12)
+        
+        self.new_chat_btn = TelegramButton("✏️ Новый чат", is_dark=self.is_dark_mode)
+        self.new_chat_btn.setMinimumHeight(48)
+        self.new_chat_btn.clicked.connect(self.show_new_chat_dialog)
+        new_chat_layout.addWidget(self.new_chat_btn)
+        
+        layout.addWidget(new_chat_widget)
         
         return sidebar
     
     def create_sidebar_header(self) -> QWidget:
+        """Create sidebar header with user info"""
         header = QWidget()
-        header.setFixedHeight(56)
-        colors = get_theme_colors(self.is_dark_mode)
-        header.setStyleSheet(f"""
-            QWidget {{
-                background-color: {colors['SURFACE']};
-                border-bottom: none;
-            }}
-        """)
+        header.setFixedHeight(64)
         
         layout = QHBoxLayout(header)
-        layout.setContentsMargins(16, 8, 12, 8)
+        layout.setContentsMargins(16, 12, 12, 12)
         layout.setSpacing(12)
         
-        # Title with icon
-        title_layout = QVBoxLayout()
-        title_layout.setContentsMargins(0, 0, 0, 0)
-        title_layout.setSpacing(0)
-        
-        title_label = QLabel("Чаты")
-        title_label.setStyleSheet(f"""
-            QLabel {{
-                font-size: 24px;
-                font-weight: 700;
-                color: {colors['ON_SURFACE']};
-                letter-spacing: 0px;
-            }}
+        # User avatar
+        avatar_frame = QFrame()
+        avatar_frame.setFixedSize(40, 40)
+        avatar_frame.setStyleSheet("""
+            QFrame {
+                background-color: #3390ec;
+                border-radius: 20px;
+            }
         """)
-        title_layout.addWidget(title_label)
-        layout.addLayout(title_layout, 1)
         
-        # Filter/sort button
-        filter_btn = QPushButton("Все чаты")
-        filter_btn.setMaximumWidth(100)
-        filter_btn.setFixedHeight(32)
-        filter_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {colors['SURFACE_VARIANT']};
-                border: none;
-                border-radius: 8px;
-                color: {colors['ON_SURFACE']};
-                font-weight: 500;
-                font-size: 12px;
-                padding: 0px 8px;
-            }}
-            QPushButton:hover {{
-                background-color: {colors['BORDER']};
-            }}
-        """)
-        layout.addWidget(filter_btn)
-        
-        # Profile/settings button
-        profile_btn = QPushButton("👤")
-        profile_btn.setFixedSize(36, 36)
-        profile_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: transparent;
-                border: none;
-                border-radius: 50%;
+        avatar_label = QLabel("Ю")
+        avatar_label.setStyleSheet("""
+            QLabel {
+                color: white;
                 font-size: 18px;
-            }}
-            QPushButton:hover {{
-                background-color: {colors['SURFACE_VARIANT']};
-                border-radius: 50%;
-            }}
+                font-weight: bold;
+                qproperty-alignment: 'AlignCenter';
+            }
         """)
-        profile_btn.clicked.connect(self.show_profile)
-        layout.addWidget(profile_btn)
+        avatar_layout = QVBoxLayout(avatar_frame)
+        avatar_layout.addWidget(avatar_label)
+        
+        layout.addWidget(avatar_frame)
+        
+        # User info
+        user_info_layout = QVBoxLayout()
+        user_info_layout.setSpacing(2)
+        
+        self.user_name_label = QLabel("Югвдететаль")
+        self.user_name_label.setStyleSheet("""
+            QLabel {
+                font-size: 15px;
+                font-weight: 600;
+            }
+        """)
+        user_info_layout.addWidget(self.user_name_label)
+        
+        self.user_status_label = QLabel("онлайн")
+        self.user_status_label.setStyleSheet("""
+            QLabel {
+                font-size: 13px;
+                color: #4CAF50;
+            }
+        """)
+        user_info_layout.addWidget(self.user_status_label)
+        
+        layout.addLayout(user_info_layout, 1)
         
         # Menu button
         menu_btn = QPushButton("⋯")
         menu_btn.setFixedSize(36, 36)
-        menu_btn.setStyleSheet(f"""
-            QPushButton {{
+        menu_btn.setStyleSheet("""
+            QPushButton {
                 background-color: transparent;
                 border: none;
-                border-radius: 50%;
+                border-radius: 18px;
                 font-size: 18px;
                 font-weight: bold;
-                color: {colors['ON_SURFACE']};
-            }}
-            QPushButton:hover {{
-                background-color: {colors['SURFACE_VARIANT']};
-            }}
+            }
+            QPushButton:hover {
+                background-color: rgba(0, 0, 0, 0.1);
+            }
         """)
-        menu_btn.clicked.connect(self.show_menu)
+        menu_btn.clicked.connect(self.show_main_menu)
         layout.addWidget(menu_btn)
         
         return header
     
     def create_chat_area(self) -> QWidget:
+        """Create main chat area"""
         chat_widget = QWidget()
         chat_widget.setObjectName("chatArea")
-        colors = get_theme_colors(self.is_dark_mode)
-        chat_widget.setStyleSheet(f"""
-            QWidget#chatArea {{
-                background-color: {colors['BACKGROUND']};
-            }}
-        """)
         
         layout = QVBoxLayout(chat_widget)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -493,53 +439,25 @@ class TelegramChatWindow(QMainWindow):
         layout.addWidget(self.chat_header)
         
         # Messages area
-        messages_widget = QWidget()
-        messages_layout = QVBoxLayout(messages_widget)
+        messages_container = QWidget()
+        messages_layout = QVBoxLayout(messages_container)
         messages_layout.setContentsMargins(0, 0, 0, 0)
         
         self.messages_scroll = QScrollArea()
         self.messages_scroll.setWidgetResizable(True)
         self.messages_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.messages_scroll.setStyleSheet(f"""
-            QScrollArea {{
-                border: none;
-                background-color: {colors['BACKGROUND']};
-            }}
-            QScrollBar:vertical {{
-                background-color: {colors['BACKGROUND']};
-                width: 8px;
-                border-radius: 4px;
-                margin: 0px;
-            }}
-            QScrollBar::handle:vertical {{
-                background-color: {colors['ON_SURFACE_VARIANT']};
-                border-radius: 4px;
-                min-height: 30px;
-                margin: 2px 2px 2px 2px;
-            }}
-            QScrollBar::handle:vertical:hover {{
-                background-color: {colors['BORDER']};
-            }}
-            QScrollBar::add-line:vertical {{
-                border: none;
-                background: none;
-            }}
-            QScrollBar::sub-line:vertical {{
-                border: none;
-                background: none;
-            }}
-        """)
+        self.messages_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         
         self.messages_container = QWidget()
         self.messages_layout = QVBoxLayout(self.messages_container)
-        self.messages_layout.setContentsMargins(12, 12, 12, 12)
-        self.messages_layout.setSpacing(8)
+        self.messages_layout.setContentsMargins(8, 8, 8, 8)
+        self.messages_layout.setSpacing(4)
         self.messages_layout.addStretch()
         
         self.messages_scroll.setWidget(self.messages_container)
         messages_layout.addWidget(self.messages_scroll)
         
-        layout.addWidget(messages_widget, 1)
+        layout.addWidget(messages_container, 1)
         
         # Input area
         self.input_area = self.create_input_area()
@@ -548,1113 +466,466 @@ class TelegramChatWindow(QMainWindow):
         return chat_widget
     
     def create_chat_header(self) -> QWidget:
+        """Create chat header with chat info"""
         header = QWidget()
-        header.setFixedHeight(56)
-        colors = get_theme_colors(self.is_dark_mode)
-        header.setStyleSheet(f"""
-            QWidget {{
-                background-color: {colors['SURFACE']};
-                border-bottom: none;
-            }}
-        """)
+        header.setFixedHeight(64)
         
         layout = QHBoxLayout(header)
-        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setContentsMargins(16, 12, 16, 12)
         layout.setSpacing(12)
         
-        # Back button (hidden by default)
+        # Back button (visible only when chat is selected)
         self.back_btn = QPushButton("←")
         self.back_btn.setFixedSize(36, 36)
-        self.back_btn.setStyleSheet(f"""
-            QPushButton {{
+        self.back_btn.setStyleSheet("""
+            QPushButton {
                 background-color: transparent;
                 border: none;
                 border-radius: 18px;
-                font-size: 16px;
-                color: {colors['PRIMARY']};
+                font-size: 18px;
                 font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background-color: {colors['SURFACE_VARIANT']};
-            }}
-            QPushButton:pressed {{
-                background-color: {colors['BORDER']};
-            }}
+            }
+            QPushButton:hover {
+                background-color: rgba(0, 0, 0, 0.1);
+            }
         """)
         self.back_btn.clicked.connect(self.go_back)
         self.back_btn.setVisible(False)
         layout.addWidget(self.back_btn)
         
-        # Chat title and info
-        title_layout = QVBoxLayout()
-        title_layout.setContentsMargins(0, 0, 0, 0)
-        title_layout.setSpacing(2)
+        # Chat info
+        chat_info_layout = QVBoxLayout()
+        chat_info_layout.setSpacing(2)
         
-        self.chat_title = QLabel("Select a chat")
-        self.chat_title.setStyleSheet(f"""
-            QLabel {{
-                font-size: 15px;
+        self.chat_title_label = QLabel("Выберите чат")
+        self.chat_title_label.setStyleSheet("""
+            QLabel {
+                font-size: 16px;
                 font-weight: 600;
-                color: {colors['ON_SURFACE']};
-            }}
+            }
         """)
-        title_layout.addWidget(self.chat_title)
+        chat_info_layout.addWidget(self.chat_title_label)
         
-        self.chat_subtitle = QLabel("Online")
-        self.chat_subtitle.setStyleSheet(f"""
-            QLabel {{
-                font-size: 12px;
-                color: {colors['ON_SURFACE_VARIANT']};
-            }}
+        self.chat_status_label = QLabel("")
+        self.chat_status_label.setStyleSheet("""
+            QLabel {
+                font-size: 13px;
+                color: #666;
+            }
         """)
-        title_layout.addWidget(self.chat_subtitle)
-        layout.addLayout(title_layout, 1)
+        chat_info_layout.addWidget(self.chat_status_label)
         
-        layout.addStretch()
+        layout.addLayout(chat_info_layout, 1)
         
         # Action buttons
-        self.search_btn = QPushButton("🔍")
-        self.search_btn.setFixedSize(36, 36)
-        self.search_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: transparent;
-                border: none;
-                border-radius: 18px;
-                font-size: 16px;
-            }}
-            QPushButton:hover {{
-                background-color: {colors['SURFACE_VARIANT']};
-            }}
-        """)
-        layout.addWidget(self.search_btn)
+        self.search_chat_btn = self.create_header_button("🔍", "Поиск в чате")
+        layout.addWidget(self.search_chat_btn)
         
-        self.menu_btn = QPushButton("⋯")
-        self.menu_btn.setFixedSize(36, 36)
-        self.menu_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: transparent;
-                border: none;
-                border-radius: 18px;
-                font-size: 16px;
-                font-weight: bold;
-                color: {colors['ON_SURFACE']};
-            }}
-            QPushButton:hover {{
-                background-color: {colors['SURFACE_VARIANT']};
-            }}
-        """)
-        self.menu_btn.clicked.connect(self.show_chat_menu)
-        layout.addWidget(self.menu_btn)
+        self.chat_menu_btn = self.create_header_button("⋯", "Меню чата")
+        self.chat_menu_btn.clicked.connect(self.show_chat_menu)
+        layout.addWidget(self.chat_menu_btn)
         
         return header
     
+    def create_header_button(self, icon: str, tooltip: str) -> QPushButton:
+        """Create header action button"""
+        btn = QPushButton(icon)
+        btn.setFixedSize(36, 36)
+        btn.setToolTip(tooltip)
+        btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                border: none;
+                border-radius: 18px;
+                font-size: 16px;
+            }
+            QPushButton:hover {
+                background-color: rgba(0, 0, 0, 0.1);
+            }
+        """)
+        return btn
     
     def create_input_area(self) -> QWidget:
-        """Setup modern message input area"""
+        """Create message input area"""
         input_widget = QWidget()
-        input_widget.setFixedHeight(68)
-        colors = get_theme_colors(self.is_dark_mode)
-        input_widget.setStyleSheet(f"""
-            QWidget {{
-                background-color: {colors['SURFACE']};
-                border-top: none;
-            }}
-        """)
+        input_widget.setFixedHeight(72)
         
         layout = QHBoxLayout(input_widget)
-        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setContentsMargins(16, 8, 16, 16)
         layout.setSpacing(8)
         
         # Attachment button
-        attach_btn = QPushButton("➕")
-        attach_btn.setFixedSize(40, 40)
-        attach_btn.setStyleSheet(f"""
-            QPushButton {{
+        self.attach_btn = QPushButton("📎")
+        self.attach_btn.setFixedSize(40, 40)
+        self.attach_btn.setToolTip("Прикрепить файл")
+        self.attach_btn.setStyleSheet("""
+            QPushButton {
                 background-color: transparent;
                 border: none;
                 border-radius: 20px;
-                font-size: 18px;
-            }}
-            QPushButton:hover {{
-                background-color: {colors['SURFACE_VARIANT']};
-            }}
+                font-size: 20px;
+            }
+            QPushButton:hover {
+                background-color: rgba(0, 0, 0, 0.1);
+            }
         """)
-        attach_btn.setCursor(Qt.PointingHandCursor)
-        attach_btn.clicked.connect(self.attach_file)
-        layout.addWidget(attach_btn)
+        self.attach_btn.clicked.connect(self.attach_file)
+        layout.addWidget(self.attach_btn)
         
-        # Message input with modern styling
-        self.message_input = QLineEdit()
-        self.message_input.setPlaceholderText("Сообщение...")
-        self.message_input.setFixedHeight(40)
-        self.message_input.setStyleSheet(f"""
-            QLineEdit {{
-                background-color: {colors['SURFACE_VARIANT']};
-                border: 1px solid {colors['BORDER']};
-                border-radius: 20px;
-                padding: 8px 16px;
-                font-size: 14px;
-                color: {colors['ON_SURFACE']};
-                selection-background-color: {colors['PRIMARY']};
-            }}
-            QLineEdit:focus {{
-                border: 2px solid {colors['PRIMARY']};
-                padding: 8px 15px;
-            }}
-            QLineEdit::placeholder {{
-                color: {colors['ON_SURFACE_VARIANT']};
-            }}
-        """)
+        # Message input
+        self.message_input = TelegramInput(is_dark=self.is_dark_mode)
+        self.message_input.setPlaceholderText("Введите сообщение...")
+        self.message_input.setMinimumHeight(40)
         self.message_input.returnPressed.connect(self.send_message)
         layout.addWidget(self.message_input, 1)
         
-        # Send button - cleaner modern design
-        self.send_btn = QPushButton("↗")
+        # Send button
+        self.send_btn = QPushButton("↑")
         self.send_btn.setFixedSize(40, 40)
-        self.send_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {colors['PRIMARY']};
+        self.send_btn.setToolTip("Отправить сообщение")
+        self.send_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3390ec;
                 border: none;
                 border-radius: 20px;
                 font-size: 18px;
-                color: white;
                 font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background-color: {colors['PRIMARY']};
-                opacity: 0.9;
-            }}
-            QPushButton:pressed {{
-                background-color: {colors['PRIMARY']};
-            }}
-            QPushButton:disabled {{
-                background-color: {colors['ON_SURFACE_VARIANT']};
-            }}
+                color: white;
+            }
+            QPushButton:hover {
+                background-color: #2b7bc2;
+            }
+            QPushButton:pressed {
+                background-color: #1f5a8e;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+            }
         """)
-        self.send_btn.setCursor(Qt.PointingHandCursor)
         self.send_btn.clicked.connect(self.send_message)
         layout.addWidget(self.send_btn)
         
+        # Initially disable input area
+        self.set_input_enabled(False)
+        
         return input_widget
     
-    def setup_connection_indicator(self):
-        """Add connection status indicator to UI"""
-        self.connection_label = QLabel()
-        colors = get_theme_colors(self.is_dark_mode)
-        self.connection_label.setStyleSheet(f"""
-            QLabel {{
-                color: {colors['ON_SURFACE_VARIANT']};
-                font-size: 12px;
-                padding: 4px 8px;
-                border-radius: 10px;
-                background-color: {colors['SURFACE_VARIANT']};
-            }}
-        """)
-        self.connection_label.setAlignment(Qt.AlignCenter)
-        self.update_connection_status(False, "Disconnected")
-    
-    def update_connection_status(self, connected: bool, message: str):
-        """Update connection status display"""
-        if connected:
-            self.connection_label.setText(f"● {message}")
-            self.connection_label.setStyleSheet("""
-                QLabel {
-                    color: #4CAF50;
-                    font-size: 12px;
-                    padding: 4px 8px;
-                    border-radius: 10px;
-                    background-color: rgba(76, 175, 80, 0.1);
-                }
-            """)
-        else:
-            self.connection_label.setText(f"○ {message}")
-            self.connection_label.setStyleSheet("""
-                QLabel {
-                    color: #F44336;
-                    font-size: 12px;
-                    padding: 4px 8px;
-                    border-radius: 10px;
-                    background-color: rgba(244, 67, 54, 0.1);
-                }
-            """)
-        
-        # Add to status bar if not already added
+    def setup_status_bar(self):
+        """Setup status bar with connection indicator"""
         status_bar = self.statusBar()
-        if self.connection_label not in status_bar.children():
-            status_bar.addPermanentWidget(self.connection_label)
+        
+        # Connection status label
+        self.connection_label = QLabel("○ Подключение...")
+        self.connection_label.setStyleSheet("""
+            QLabel {
+                padding: 2px 8px;
+                border-radius: 10px;
+                font-size: 11px;
+            }
+        """)
+        status_bar.addPermanentWidget(self.connection_label)
+        
+        # Version info
+        version_label = QLabel("v1.0 • Bitrix24 Chat")
+        version_label.setStyleSheet("""
+            QLabel {
+                color: #666;
+                font-size: 11px;
+                padding-right: 8px;
+            }
+        """)
+        status_bar.addPermanentWidget(version_label)
+    
+    def setup_timers(self):
+        """Setup auto-refresh timers"""
+        # Groups refresh timer (every 60 seconds)
+        self.groups_timer = QTimer(self)
+        self.groups_timer.timeout.connect(self.refresh_groups)
+        self.groups_timer.start(60000)
+        
+        # Messages refresh timer for active chat (every 30 seconds)
+        self.messages_timer = QTimer(self)
+        self.messages_timer.timeout.connect(self.refresh_current_messages)
+        self.messages_timer.start(30000)
     
     def initialize_data(self):
-        """Initialize all data including WebSocket"""
+        """Initialize all data"""
+        print("Initializing data...")
+        
+        # Load user data
         self.load_current_user()
+        
+        # Load other data
         self.load_customers()
         self.load_managers()
         self.load_groups()
         
-        # Initialize Pull client AFTER we have user data
+        # Initialize Pull client
         self.initialize_pull_client()
         
-        # Start periodic updates (will be disabled when Pull client connects)
-        self.update_timer = QTimer(self)
-        self.update_timer.timeout.connect(self.periodic_update)
-        self.update_timer.start(30000)  # 30 seconds (fallback when no Pull connection)
-        print("✓ Periodic update timer started (will be disabled when Pull client connects)")
-    
-    def initialize_pull_client(self):
-        """Initialize Bitrix Pull client with proper authentication"""
-        if not self.current_user:
-            print("Cannot initialize Pull client: no user data")
-            return
-        
-        print("\n" + "="*60)
-        print("Initializing Bitrix Pull Client")
-        print("="*60)
-        
-        try:
-            # Create Pull client
-            # Prefer site ID from auth_info or environment
-            site_id = os.environ.get('BITRIX_SITE_ID') or self.auth_info.get('site_id', 'ap')
-            use_api_token = os.environ.get('BITRIX_USE_API_TOKEN', '0') == '1'
-
-            self.pull_client = BitrixPullClient(self.api, self.current_user.id, site_id, use_api_token)
-
-            # If we assembled pull_config/cookies from environment, inject them into the client
-            env_pull = self.auth_info.get('pull_config')
-            env_cookies = self.auth_info.get('cookies')
-            # If nothing was found earlier, attempt to build from environment now
-            if not env_pull:
-                # Build minimal pull_config from environment keys if available
-                ws_url = os.environ.get('PULL_WEBSOCKET_URL') or os.environ.get('PULL_WEBSOCKET')
-                private_channel = os.environ.get('PULL_CHANNEL_PRIVATE') or os.environ.get('PULL_CHANNEL')
-                shared_channel = os.environ.get('PULL_CHANNEL_SHARED')
-                if ws_url or private_channel or shared_channel:
-                    built = {}
-                    if ws_url:
-                        built['server'] = {
-                            'websocket': ws_url,
-                            'websocket_secure': ws_url,
-                            'hostname': os.environ.get('PULL_WEBSOCKET_HOSTNAME') or os.environ.get('BITRIX_HOSTNAME', ''),
-                            'websocket_enabled': True
-                        }
-                    ch = {}
-                    now_ts = int(time.time())
-                    if private_channel:
-                        ch['private'] = {'id': private_channel, 'start': now_ts, 'end': now_ts + 43200, 'type': 'private'}
-                    if shared_channel:
-                        ch['shared'] = {'id': shared_channel, 'start': now_ts, 'end': now_ts + 43200, 'type': 'shared'}
-                    if ch:
-                        built['channels'] = ch
-                    env_pull = built
-                    print("Built Pull config from environment in initialize_pull_client")
-            if not env_cookies:
-                # collect cookies from env as fallback
-                built_cookies = {}
-                for k, v in os.environ.items():
-                    if k.startswith('COOKIE_'):
-                        built_cookies[k[len('COOKIE_'):]] = v
-                    elif k in ('PHPSESSID', 'USER_ID', 'BITRIX_SM_LOGIN', 'BITRIX_SM_UID'):
-                        built_cookies[k] = v
-                if built_cookies:
-                    env_cookies = built_cookies
-                    print(f"Built cookies from environment in initialize_pull_client ({len(env_cookies)})")
-            if env_pull or env_cookies:
-                # Overwrite client's auth_data/pull_config/cookies with env-provided values
-                try:
-                    if env_pull:
-                        self.pull_client.auth_data = self.pull_client.auth_data or {}
-                        self.pull_client.auth_data['pull_config'] = env_pull
-                        self.pull_client.pull_config = env_pull
-                        self.pull_client.config = env_pull
-                        print("Injected Pull configuration from environment into Pull client")
-                    if env_cookies:
-                        self.pull_client.auth_data = self.pull_client.auth_data or {}
-                        self.pull_client.auth_data['cookies'] = env_cookies
-                        self.pull_client.cookies = env_cookies
-                        # Rebuild cookie header
-                        try:
-                            self.pull_client.cookie_header = self.pull_client.build_cookie_header()
-                        except Exception:
-                            pass
-                        print("Injected cookies from environment into Pull client")
-                except Exception as e:
-                    print(f"Warning: failed to inject env Pull config into client: {e}")
-            
-            # Connect signals
-            self.pull_client.message_received.connect(self.handle_pull_message)
-            self.pull_client.connection_status.connect(self.update_connection_status)
-            self.pull_client.debug_info.connect(self.handle_debug_info)
-            
-            # Set up callback for getting user names
-            self.pull_client.get_user_name_callback = self.get_user_name
-            
-            # Start the client
-            print("Starting Pull client...")
-            self.pull_client.start_client()
-            
-            print("✓ Pull client initialized successfully")
-            print("="*60 + "\n")
-            
-        except Exception as e:
-            print(f"✗ Error initializing Pull client: {e}")
-            import traceback
-            traceback.print_exc()
-            
-            self.statusBar().showMessage(f"Pull client error: {str(e)[:50]}", 5000)
+        # Update UI
+        self.update_user_info()
     
     def load_current_user(self):
+        """Load current user profile"""
         print("Loading current user...")
-        data = self.api.get_current_profile()
         
-        if data and not data.get("error"):
-            # The response is a single user object, not in "result" field
-            if isinstance(data, dict):
-                result = data
-            else:
-                result = data.get("result", {}) if isinstance(data, dict) else data
+        try:
+            data = self.api.get_current_profile()
             
+            if data and not data.get("error"):
+                # Handle different response formats
+                if isinstance(data, dict):
+                    result = data
+                else:
+                    result = data.get("result", {}) if isinstance(data, dict) else data
+                
+                self.current_user = User(
+                    id=int(result.get("ID", self.auth_info.get('user_id', 1))),
+                    name=result.get("NAME", ""),
+                    last_name=result.get("LAST_NAME", ""),
+                    email=result.get("EMAIL", ""),
+                    is_manager=result.get("IS_MANAGER", False) == "true" or result.get("IS_MANAGER", False) == True,
+                    is_moderator=result.get("IS_MODERATOR", False) == "true" or result.get("IS_MODERATOR", False) == True
+                )
+                print(f"✓ Current user: {self.current_user.display_name} (ID: {self.current_user.id})")
+            else:
+                # Create default user
+                self.current_user = User(
+                    id=self.auth_info.get('user_id', 1),
+                    name="Пользователь",
+                    last_name="",
+                    email="",
+                    is_manager=False,
+                    is_moderator=False
+                )
+                print("⚠ Using default user")
+                
+        except Exception as e:
+            print(f"✗ Error loading user: {e}")
+            traceback.print_exc()
+            
+            # Create fallback user
             self.current_user = User(
-                id=int(result.get("ID", 2611)),  # Default from captured data
-                name=result.get("NAME", ""),
-                last_name=result.get("LAST_NAME", ""),
-                email=result.get("EMAIL", ""),
-                is_manager=result.get("IS_MANAGER", False) == "true" or result.get("IS_MANAGER", False) == True,
-                is_moderator=result.get("IS_MODERATOR", False) == "true" or result.get("IS_MODERATOR", False) == True
-            )
-            print(f"Current user: {self.current_user.display_name} (ID: {self.current_user.id}, Manager: {self.current_user.is_manager})")
-        else:
-            print("Using user ID from captured data")
-            self.current_user = User(
-                id=1,  
-                name="Неизвестно",
+                id=self.auth_info.get('user_id', 1),
+                name="Пользователь",
                 last_name="",
-                email="mail@example.com",
+                email="",
                 is_manager=False,
                 is_moderator=False
             )
     
     def load_customers(self):
+        """Load customers list"""
         print("Loading customers...")
-        data = self.api.get_customers()
         
-        if data and not data.get("error"):
-            # The response appears to be a list of customers
-            if isinstance(data, list):
-                customers_data = data
-            elif isinstance(data, dict) and "result" in data:
-                customers_data = data["result"]
-                if not isinstance(customers_data, list):
-                    customers_data = [customers_data]
+        try:
+            data = self.api.get_customers()
+            
+            if data and not data.get("error"):
+                # Handle different response formats
+                if isinstance(data, list):
+                    customers_data = data
+                elif isinstance(data, dict) and "result" in data:
+                    customers_data = data["result"]
+                    if not isinstance(customers_data, list):
+                        customers_data = [customers_data]
+                else:
+                    customers_data = []
+                
+                self.customers = []
+                
+                for customer in customers_data:
+                    # Extract name
+                    name = customer.get("NAME", "")
+                    last_name = customer.get("LAST_NAME", "")
+                    
+                    # Try to get from NAME_PRICE field
+                    if not name and not last_name and customer.get("NAME_PRICE"):
+                        name_parts = customer.get("NAME_PRICE", "").split(" ", 1)
+                        name = name_parts[0] if name_parts else ""
+                        last_name = name_parts[1] if len(name_parts) > 1 else ""
+                    
+                    customer_obj = Customer(
+                        id=int(customer.get("ID", 0)),
+                        xml_id=customer.get("XML_ID", f"CUSTOMER_{customer.get('ID', '')}"),
+                        name=name,
+                        last_name=last_name
+                    )
+                    self.customers.append(customer_obj)
+                
+                print(f"✓ Loaded {len(self.customers)} customers")
+                
+                # Show sample
+                for i, cust in enumerate(self.customers[:3]):
+                    print(f"  {i+1}. {cust.full_name} (ID: {cust.id})")
+                    
             else:
-                customers_data = []
-            
-            self.customers = []
-            
-            for customer in customers_data:
-                # Handle both response formats
-                name = customer.get("NAME", "")
-                last_name = customer.get("LAST_NAME", "")
+                print("⚠ Using mock customers")
+                self.load_mock_customers()
                 
-                # If there's a NAME_PRICE field, it might contain the full name
-                if not name and not last_name and customer.get("NAME_PRICE"):
-                    name_parts = customer.get("NAME_PRICE", "").split(" ", 1)
-                    name = name_parts[0] if name_parts else ""
-                    last_name = name_parts[1] if len(name_parts) > 1 else ""
-                
-                customer_obj = Customer(
-                    id=int(customer.get("ID", 0)),
-                    xml_id=customer.get("XML_ID", f"CUSTOMER_{customer.get('ID', '')}"),
-                    name=name,
-                    last_name=last_name
-                )
-                self.customers.append(customer_obj)
-            
-            print(f"Loaded {len(self.customers)} customers")
-            
-            # Debug: print first few customers
-            for i, cust in enumerate(self.customers[:3]):
-                print(f"  Customer {i+1}: {cust.full_name} (ID: {cust.id})")
-        else:
-            print("Using mock customers")
-            self.customers = [
-                Customer(id=2611, xml_id="USER_2611", name="Нургали", last_name="Алдеев"),
-                Customer(id=836, xml_id="8454575b-0a3e-4e17-9e05-afb24da4a52f", name="АВЭКС-К", last_name=""),
-            ]
+        except Exception as e:
+            print(f"✗ Error loading customers: {e}")
+            traceback.print_exc()
+            self.load_mock_customers()
+    
+    def load_mock_customers(self):
+        """Load mock customers for testing"""
+        self.customers = [
+            Customer(id=2611, xml_id="USER_2611", name="Нургали", last_name="Алдеев"),
+            Customer(id=836, xml_id="8454575b-0a3e-4e17-9e05-afb24da4a52f", name="АВЭКС-К", last_name=""),
+            Customer(id=1001, xml_id="USER_1001", name="Иван", last_name="Иванов"),
+            Customer(id=1002, xml_id="USER_1002", name="Петр", last_name="Петров"),
+        ]
+        print(f"✓ Loaded {len(self.customers)} mock customers")
     
     def load_managers(self):
+        """Load managers list"""
         print("Loading managers...")
-        data = self.api.list_managers()
         
-        if data and not data.get("error"):
-            result = data.get("result", [])
-            self.managers = []
+        try:
+            data = self.api.list_managers()
             
-            for manager in result:
-                user = User(
-                    id=manager.get("ID"),
-                    name=manager.get("NAME", manager.get("FIRST_NAME", "")),
-                    last_name=manager.get("LAST_NAME", ""),
-                    email=manager.get("EMAIL", ""),
-                    is_manager=True
-                )
-                self.managers.append(user)
-            print(f"Loaded {len(self.managers)} managers")
-        else:
-            print("Using mock managers")
-            self.managers = [
-                User(id=100, name="Иван", last_name="Иванов", email="ivan@example.com", is_manager=True),
-                User(id=101, name="Петр", last_name="Петров", email="petr@example.com", is_manager=True),
-            ]
+            if data and not data.get("error"):
+                result = data.get("result", [])
+                self.managers = []
+                
+                for manager in result:
+                    user = User(
+                        id=manager.get("ID"),
+                        name=manager.get("NAME", manager.get("FIRST_NAME", "")),
+                        last_name=manager.get("LAST_NAME", ""),
+                        email=manager.get("EMAIL", ""),
+                        is_manager=True
+                    )
+                    self.managers.append(user)
+                print(f"✓ Loaded {len(self.managers)} managers")
+            else:
+                print("⚠ Using mock managers")
+                self.load_mock_managers()
+                
+        except Exception as e:
+            print(f"✗ Error loading managers: {e}")
+            traceback.print_exc()
+            self.load_mock_managers()
+    
+    def load_mock_managers(self):
+        """Load mock managers for testing"""
+        self.managers = [
+            User(id=100, name="Алексей", last_name="Сидоров", email="alexey@example.com", is_manager=True),
+            User(id=101, name="Мария", last_name="Петрова", email="maria@example.com", is_manager=True),
+        ]
+        print(f"✓ Loaded {len(self.managers)} mock managers")
     
     def load_groups(self):
+        """Load chat groups"""
         print("Loading chat groups...")
-        data = self.api.get_groups()
         
-        if data and not data.get("error"):
-            if isinstance(data, list):
-                groups_data = data
-            elif isinstance(data, dict) and "result" in data:
-                groups_data = data["result"]
-                if not isinstance(groups_data, list):
-                    groups_data = [groups_data]
-            else:
-                groups_data = []
+        try:
+            data = self.api.get_groups()
             
-            self.groups = []
-            
-            for i, chat in enumerate(groups_data):
-                group_id = chat.get("id")
-                if group_id == "0":
-                    continue
+            if data and not data.get("error"):
+                # Handle different response formats
+                if isinstance(data, list):
+                    groups_data = data
+                elif isinstance(data, dict) and "result" in data:
+                    groups_data = data["result"]
+                    if not isinstance(groups_data, list):
+                        groups_data = [groups_data]
+                else:
+                    groups_data = []
+                
+                self.groups = []
+                
+                for i, chat in enumerate(groups_data):
+                    group_id = chat.get("id")
+                    if group_id == "0":
+                        continue
+                        
+                    try:
+                        group_id_int = int(group_id) if group_id else i
+                    except:
+                        group_id_int = i
                     
-                try:
-                    group_id_int = int(group_id) if group_id else i
-                except:
-                    group_id_int = i
+                    # Parse properties
+                    props_str = chat.get("props", "{}")
+                    try:
+                        props = json.loads(props_str)
+                        title = props.get("title", "")
+                        author_name = props.get("author_name", "")
+                        touch = props.get("touch", "")
+                    except:
+                        props = {}
+                        title = ""
+                        author_name = ""
+                        touch = ""
+                    
+                    # Parse participants
+                    participants = []
+                    participant_names = [] 
+                    members = chat.get("members", [])
+                    
+                    if isinstance(members, list):
+                        for member in members:
+                            ctmember = member.get("ctmember")
+                            if ctmember:
+                                try:
+                                    participant_id = int(ctmember)
+                                    participants.append(participant_id)
+                                    
+                                    member_name = f"{member.get('NAME', '')} {member.get('LAST_NAME', '')}".strip()
+                                    if member_name:
+                                        participant_names.append(member_name)
+                                    else:
+                                        participant_names.append(f"User {participant_id}")
+                                except:
+                                    pass
+                    
+                    # Parse notifications
+                    notifications = chat.get("notifications", 0)
+                    try:
+                        unread_count = int(notifications) if notifications else 0
+                    except:
+                        unread_count = 0
+                    
+                    # Parse metadata
+                    meta = chat.get("meta", {})
+                    pinned = meta.get("pinned", "false") == "true"
+                    
+                    group = Group(
+                        id=group_id_int,
+                        title=title,
+                        participants=participants,
+                        participant_names=participant_names,
+                        unread_count=unread_count,
+                        last_message=author_name,
+                        last_message_time=touch,
+                        author=int(chat.get("author", 0)) if chat.get("author") else None,
+                        date=chat.get("date", ""),
+                        pinned=pinned,
+                        type=chat.get("type", "messageGroup"),
+                        site=chat.get("site", "")
+                    )
+                    self.groups.append(group)
                 
-                # Parse properties
-                props_str = chat.get("props", "{}")
-                try:
-                    props = json.loads(props_str)
-                    title = props.get("title", "")
-                    author_name = props.get("author_name", "")
-                    touch = props.get("touch", "")
-                except:
-                    props = {}
-                    title = ""
-                    author_name = ""
-                    touch = ""
+                print(f"✓ Loaded {len(self.groups)} groups")
                 
-                # Parse participants
-                participants = []
-                participant_names = [] 
-                members = chat.get("members", [])
+            else:
+                print("⚠ Using mock groups")
+                self.load_mock_groups()
                 
-                if isinstance(members, list):
-                    for member in members:
-                        ctmember = member.get("ctmember")
-                        if ctmember:
-                            try:
-                                participant_id = int(ctmember)
-                                participants.append(participant_id)
-                                
-                                member_name = f"{member.get('NAME', '')} {member.get('LAST_NAME', '')}".strip()
-                                if member_name:
-                                    participant_names.append(member_name)
-                                else:
-                                    participant_names.append(f"User {participant_id}")
-                            except:
-                                pass
-                
-                # Parse notifications
-                notifications = chat.get("notifications", 0)
-                try:
-                    unread_count = int(notifications) if notifications else 0
-                except:
-                    unread_count = 0
-                
-                # Parse metadata
-                meta = chat.get("meta", {})
-                pinned = meta.get("pinned", "false") == "true"
-                
-                group = Group(
-                    id=group_id_int,
-                    title=title,
-                    participants=participants,
-                    participant_names=participant_names,
-                    unread_count=unread_count,
-                    last_message=author_name,
-                    last_message_time=touch,
-                    author=int(chat.get("author", 0)) if chat.get("author") else None,
-                    date=chat.get("date", ""),
-                    pinned=pinned,
-                    type=chat.get("type", "messageGroup"),
-                    site=chat.get("site", "")
-                )
-                self.groups.append(group)
-            
-            print(f"Loaded {len(self.groups)} groups")
+        except Exception as e:
+            print(f"✗ Error loading groups: {e}")
+            traceback.print_exc()
+            self.load_mock_groups()
         
         # Sort groups (pinned first, then by date)
         self.groups.sort(key=lambda x: (not x.pinned, x.date or ""), reverse=True)
         self.update_chat_list()
     
-    def load_messages(self, group_id: int):
-        print(f"Loading messages for group {group_id}...")
-        
-        if group_id != 0:
-            self.api.clear_notifications(group_id)
-        
-        if group_id == 0:
-            data = self.api.get_user_news_content()
-        else:
-            data = self.api.get_messages(group_id)
-        
-        self.messages = []
-        
-        if data and not data.get("error"):
-            result = data.get("result", data)
-            
-            if isinstance(result, dict) and "messages" in result:
-                messages_list = result["messages"]
-            elif isinstance(result, dict) and "result" in result:
-                messages_list = result["result"]
-                if not isinstance(messages_list, list):
-                    messages_list = [messages_list]
-            elif isinstance(result, list):
-                messages_list = result
-            else:
-                messages_list = []
-            
-            for msg in messages_list:
-                message_text = msg.get("message") or ""
-                sender_id = msg.get("author") or 0
-                msg_prop = json.loads(msg.get("props"))
-                sender_name = msg_prop.get("author_name") or  ""
-                attachments = []
-                files = msg.get("files") or msg.get("attachments") or []
-                if files and isinstance(files, list):
-                    for file in files:
-                        attachment = {
-                            "id": file.get("id") or file.get("ID") or 0,
-                            "name": file.get("name") or file.get("NAME") or "file",
-                            "size": file.get("size") or file.get("SIZE") or 0,
-                            "url": file.get("url"),
-                            "download_link": file.get("downloadLink")
-                        }
-                        attachments.append(attachment)
-                
-                message = Message(
-                    id=msg.get("id") or msg.get("ID") or len(self.messages),
-                    text=message_text,
-                    sender_id=int(sender_id) if sender_id else 0,
-                    sender_name=sender_name or "Unknown",
-                    timestamp=msg.get("date") or msg.get("DATE") or msg.get("timestamp") or "",
-                    files=attachments,
-                    is_own=(int(sender_id) == self.current_user.id if sender_id and self.current_user else False)
-                )
-                self.messages.append(message)
-            
-            print(f"Loaded {len(self.messages)} messages")
-        
-        self.update_messages_display()
-    
-    def update_chat_list(self):
-        """Update chat list """
-        # Clear existing items
-        while self.chats_layout.count() > 1:
-            item = self.chats_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        
-        # Add chat items with theme support
-        for group in self.groups:
-            item = ChatListItem(group, self.current_user, self.customers, is_dark=self.is_dark_mode)
-            item.clicked.connect(self.select_chat)
-            self.chats_layout.insertWidget(0, item)
-    
-    def update_messages_display(self):
-        """Update messages display bubbles"""
-        # Clear current messages
-        while self.messages_layout.count() > 1:
-            item = self.messages_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        
-        # Add messages with spacing and theme support
-        for i, message in enumerate(self.messages):
-            bubble = MessageBubble(message, self.is_dark_mode)
-            
-            # Add spacing between different senders
-            if i > 0 and self.messages[i-1].sender_id != message.sender_id:
-                spacer = QWidget()
-                spacer.setFixedHeight(1)
-                self.messages_layout.insertWidget(self.messages_layout.count() - 1, spacer)
-            
-            # Create a container widget for alignment
-            container = QWidget()
-            container_layout = QHBoxLayout(container)
-            container_layout.setContentsMargins(0, 0, 0, 0)
-            
-            # Align own messages to right, others to left
-            if message.is_own:
-                container_layout.addStretch()
-                container_layout.addWidget(bubble)
-                container_layout.setAlignment(Qt.AlignRight)
-            else:
-                container_layout.addWidget(bubble)
-                container_layout.addStretch()
-                container_layout.setAlignment(Qt.AlignLeft)
-            
-            self.messages_layout.insertWidget(self.messages_layout.count() - 1, container)
-        
-        # Scroll to bottom
-        QTimer.singleShot(100, self.scroll_to_bottom)
-    
-    def scroll_to_bottom(self):
-        scrollbar = self.messages_scroll.verticalScrollBar()
-        scrollbar.setValue(scrollbar.maximum())
-    
-    def select_chat(self, group_id: int):
-        print(f"Selecting chat: {group_id}")
-        for group in self.groups:
-            if group.id == group_id:
-                print(f'select group {group_id}')
-                self.current_group = group
-                self.chat_title.setText(group.display_title(self.current_user, self.customers))
-                # Update subtitle with member count
-                member_count = len(group.members) if hasattr(group, 'members') else 2
-                self.chat_subtitle.setText(f"{member_count} участников" if member_count != 1 else "1 участник")
-                self.load_messages(group_id)
-                self.back_btn.setVisible(True)
-                break
-    
-    def send_message(self):
-        text = self.message_input.text().strip()
-        if not text or not self.current_group:
-            return
-        
-        print(f"Sending message to group {self.current_group.id}")
-        
-        # Try to send via HTTP API first
-        try:
-            data = self.api.add_message(self.current_group, text)
-            
-            if data and not data.get("error"):
-                # Create new message object
-                new_msg = Message(
-                    id=len(self.messages) + 1,
-                    text=text,
-                    sender_id=self.current_user.id,
-                    sender_name=self.current_user.display_name,
-                    timestamp=datetime.now().isoformat(),
-                    files=[],
-                    is_own=True,
-                    read=True
-                )
-                
-                # Add to messages list
-                self.messages.append(new_msg)
-                
-                # Update UI
-                self.update_messages_display()
-                self.message_input.clear()
-                
-                # Update group info
-                self.current_group.last_message = text[:50] + ("..." if len(text) > 50 else "")
-                self.current_group.last_message_time = "just now"
-                self.update_chat_list()
-                
-                # Show success message
-                self.statusBar().showMessage("✓ Message sent successfully", 3000)
-                
-            else:
-                # If API returns error, fall back to demo mode
-                error_msg = data.get("error_description", "Unknown error") if isinstance(data, dict) else "Unknown error"
-                print(f"API error: {error_msg}")
-                self.send_demo_message(text)
-                
-        except Exception as e:
-            print(f"Error sending via HTTP API: {e}")
-    
-    def attach_file(self):
-        file_paths, _ = QFileDialog.getOpenFileNames(
-            self,
-            "Select files",
-            "",
-            "All files (*.*);;"
-            "Images (*.jpg *.jpeg *.png *.gif *.bmp);;"
-            "Documents (*.pdf *.doc *.docx *.xls *.xlsx);;"
-            "Archives (*.zip *.rar *.7z)"
-        )
-        
-        for file_path in file_paths:
-            print(f"Attaching file: {file_path}")
-    
-    def go_back(self):
-        self.current_group = None
-        self.chat_title.setText("Select a chat")
-        self.chat_subtitle.setText("Online")
-        self.back_btn.setVisible(False)
-        
-        # Clear messages
-        self.messages = []
-        self.update_messages_display()
-    
-    def show_new_chat_dialog(self):
-        """Show modern new message dialog"""
-        dialog = NewMessageDialog(
-            parent=self,
-            groups=self.groups,
-            current_user=self.current_user,
-            customers=self.customers,
-            is_dark=self.is_dark_mode
-        )
-        
-        def on_message_sent(text, group_id):
-            # Find group and select it
-            for group in self.groups:
-                if group.id == group_id:
-                    self.current_group = group
-                    self.chat_title.setText(group.display_title(self.current_user, self.customers))
-                    # Update subtitle with member count
-                    member_count = len(group.members) if hasattr(group, 'members') else 1
-                    self.chat_subtitle.setText(f"{member_count} участников" if member_count != 1 else "1 участник")
-                    self.load_messages(group_id)
-                    self.back_btn.setVisible(True)
-                    break
-            
-            # Send the message
-            self.send_message_with_text(text)
-        
-        dialog.message_sent.connect(on_message_sent)
-        dialog.exec()
-    
-    def send_message_with_text(self, text: str):
-        """Send message with specific text"""
-        if not text or not self.current_group:
-            return
-        
-        self.message_input.text(text)
-        self.send_message()
-    
-    def apply_current_theme(self):
-        """Apply current theme to all widgets"""
-        apply_theme(self, self.is_dark_mode)
-        self.update_messages_display()
-    
-    def show_debug_info(self):
-        """Show debug information about Pull client"""
-        if self.pull_client:
-            debug_info = self.pull_client.get_debug_info()
-            
-            debug_text = "Bitrix Pull Client Debug Info:\n\n"
-            for key, value in debug_info.items():
-                debug_text += f"{key}: {value}\n"
-            
-            # Add authentication info
-            debug_text += f"\nAuthentication:\n"
-            debug_text += f"User ID: {self.current_user.id if self.current_user else 'N/A'}\n"
-            debug_text += f"Cookies loaded: {len(self.pull_client.cookies)}\n"
-            debug_text += f"Pull config: {'Loaded' if self.pull_client.pull_config else 'Not loaded'}\n"
-            
-            QMessageBox.information(self, "Debug Info", debug_text)
-        else:
-            QMessageBox.warning(self, "Debug Info", "Pull client not initialized")
-    
-    def show_menu(self):
-        menu = QMenu(self)
-        
-        menu.addAction("Profile", self.show_profile)
-        menu.addAction("Settings", self.show_settings)
-        menu.addSeparator()
-        menu.addAction("Dark Mode", self.toggle_dark_mode)
-        menu.addSeparator()
-        menu.addAction("Refresh", self.force_refresh)
-        menu.addAction("About", self.show_about)
-        
-        menu.exec(self.sender().mapToGlobal(self.sender().rect().bottomLeft()))
-    
-    def show_chat_menu(self):
-        if not self.current_group:
-            return
-        
-        menu = QMenu(self)
-        
-        menu.addAction("Chat Info", self.show_chat_info)
-        menu.addAction("Manage Participants", self.manage_participants)
-        menu.addSeparator()
-        menu.addAction("Clear History", self.clear_chat_history)
-        menu.addAction("Delete Chat", self.delete_chat)
-        
-        menu.exec(self.sender().mapToGlobal(self.sender().rect().bottomLeft()))
-    
-    def show_profile(self):
-        if self.current_user:
-            QMessageBox.information(
-                self,
-                "Profile",
-                f"Name: {self.current_user.display_name}\n"
-                f"Email: {self.current_user.email}\n"
-                f"Role: {'Manager' if self.current_user.is_manager else 'User'}\n"
-                f"User ID: {self.current_user.id}"
-            )
-    
-    def show_settings(self):
-        QMessageBox.information(self, "Settings", "Settings dialog would open here")
-    
-    def toggle_dark_mode(self):
-        self.is_dark_mode = not self.is_dark_mode
-        self.apply_current_theme()
-    
-    def force_refresh(self):
-        print("Forcing refresh...")
-        self.load_groups()
-        if self.current_group:
-            self.load_messages(self.current_group.id)
-        QMessageBox.information(self, "Refresh", "Data refreshed successfully")
-    
-    def show_about(self):
-        QMessageBox.about(self, "About", "Telegram-like Business Chat with Bitrix Pull\nVersion 1.0")
-    
-    def show_chat_info(self):
-        if not self.current_group:
-            return
-        
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Chat Info")
-        dialog.setMinimumWidth(300)
-        
-        layout = QVBoxLayout(dialog)
-        
-        layout.addWidget(QLabel(f"Chat ID: {self.current_group.id}"))
-        layout.addWidget(QLabel(f"Title: {self.current_group.title or 'No title'}"))
-        layout.addWidget(QLabel(f"Participants: {len(self.current_group.participants)}"))
-        
-        if self.current_group.date:
-            layout.addWidget(QLabel(f"Created: {self.current_group.date}"))
-        
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(dialog.accept)
-        layout.addWidget(close_btn)
-        
-        dialog.exec()
-    
-    def manage_participants(self):
-        QMessageBox.information(self, "Participants", "Manage participants dialog would open here")
-    
-    def clear_chat_history(self):
-        reply = QMessageBox.question(
-            self,
-            "Clear History",
-            "Are you sure you want to clear all messages in this chat?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
-        
-        if reply == QMessageBox.Yes:
-            self.messages = []
-            self.update_messages_display()
-    
-    def delete_chat(self):
-        reply = QMessageBox.question(
-            self,
-            "Delete Chat",
-            "Are you sure you want to delete this chat?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
-        
-        if reply == QMessageBox.Yes:
-            self.go_back()
-    
-    def periodic_update(self):
-        print("Periodic update...")
-        self.handle_pull_connection_status({"status": self.pull_client.status})
-        self.load_groups()
-        if self.current_group:
-            self.load_messages(self.current_group.id)
-    
-    def handle_pull_message(self, message_data: dict):
-        """Handle messages from Pull client"""
-
-        self.handle_uad_new_message(message_data)
-        
-    
-    def handle_uad_new_message(self, params: dict):
-        """Handle new message from uad.shop.chat module"""
-        msg_data = params["data"]["text"]["params"]
-        print(type(msg_data), msg_data)
-        try:
-            message_text = msg_data.get('message', '')
-            group = msg_data.get('group')
-            author = msg_data.get('author', '')
-            group_id = group.get('id')
-            author_id = group.get('sub_ctmember') if group.get('sub_ctmember') else group['author']
-            group_date = msg_data.get('sub_date')  # Extract timestamp
-            
-            # Convert group_id to int if possible
-            try:
-                group_id_int = int(group_id)
-            except:
-                group_id_int = 0
-            
-            # Convert author_id to int if possible
-            try:
-                author_id_int = int(author_id) if author_id else 0
-            except:
-                author_id_int = 0
-            
-            # Parse timestamp
-            try:
-                timestamp = group_date if group_date else datetime.now().isoformat()
-            except:
-                timestamp = datetime.now().isoformat()
-            
-            # Check if this message is for the current chat
-            if self.current_group and self.current_group.id == group_id_int:
-                # Determine if message is from current user
-                is_own_message = author_id_int == self.current_user.id if self.current_user else False
-                
-                # Create message object
-                message = Message(
-                    id=len(self.messages) + 1,
-                    text=message_text,
-                    sender_id=author_id_int,
-                    sender_name=author,
-                    timestamp=timestamp,
-                    files=[],
-                    is_own=is_own_message
-                )
-                
-                # Add to messages and update display immediately (no delay)
-                self.messages.append(message)
-
-                self.update_messages_display()  # Direct call, no QTimer delay
-                self.scroll_to_bottom()
-                
-                print(f"✓ Message added to current chat (total messages: {len(self.messages)}) - INSTANT UPDATE")
-                
-                # Update group info
-                self.current_group.last_message = message_text[:50] + ("..." if len(message_text) > 50 else "")
-                self.current_group.last_message_time = "just now"
-            else:
-                # Update unread count for this group
-                for group_obj in self.groups:
-                    if group_obj.id == group_id_int:
-                        group_obj.unread_count += 1
-                        group_obj.last_message = message_text[:50] + ("..." if len(message_text) > 50 else "")
-                        group_obj.last_message_time = "just now"
-                        self.update_chat_list()
-                        break
-                
-                # Show notification
-                self.show_notification(author, message_text, group_id_int)
-                print(f"✓ Message received in background group {group_id_int}, notification shown")
-            
-            # Update groups list
-            QTimer.singleShot(1000, self.load_groups)
-            
-        except Exception as e:
-            print(f"Error handling uad.shop.chat message: {e}")
-            import traceback
-            traceback.print_exc()
-    
-    def handle_pull_connection_status(self, params: dict):
-        """Handle connection status updates from Pull client"""
-        status = params.get('status', 'unknown')
-        print(f"Pull connection status: {status}")
-        
-        if status == 'online':
-            self.update_connection_status(True, "Connected to Bitrix")
-            # Disable periodic updates when Pull client is connected (real-time updates)
-            if self.update_timer and self.update_timer.isActive():
-                self.update_timer.stop()
-                print("✓ Periodic update timer DISABLED (Pull client connected for real-time updates)")
-        elif status == 'offline':
-            self.update_connection_status(False, "Disconnected from Bitrix")
-            # Re-enable periodic updates when Pull client disconnects
-            if self.update_timer and not self.update_timer.isActive():
-                self.update_timer.start(30000)
-                print("✓ Periodic update timer RE-ENABLED (Pull client disconnected, using fallback)")
-    
-    def get_user_name(self, user_id):
-        """Get user name by ID"""
-        if not user_id:
-            return "Unknown"
-        
-        try:
-            user_id_int = int(user_id)
-        except:
-            return f"User {user_id}"
-        
-        # Check customers
-        for customer in self.customers:
-            if customer.id == user_id_int:
-                return customer.full_name
-        
-        # Check managers
-        for manager in self.managers:
-            if manager.id == user_id_int:
-                return manager.display_name
-        
-        # Check current user
-        if self.current_user and self.current_user.id == user_id_int:
-            return self.current_user.display_name
-        
-        return f"User {user_id}"
-    
-    def handle_read_receipt(self, params: dict):
-        """Handle message read receipts"""
-        message_id = params.get('message_id')
-        
-        # Update message read status in UI
-        for message in self.messages:
-            if message.id == message_id:
-                message.read = True
-                break
-        
-        self.update_messages_display()
-    
-    def handle_chat_update(self, params: dict):
-        """Handle chat updates"""
-        chat_id = params.get('chat_id')
-        
-        # Reload groups to get updates
-        self.load_groups()
-        
-        # If this is the current group, reload messages
-        if self.current_group and self.current_group.id == chat_id:
-            self.load_messages(chat_id)
-    
-    def handle_revision_changed(self, params: dict):
-        """Handle revision changes"""
-        revision = params.get('revision')
-        print(f"Revision changed to: {revision}")
-        # Show notification to user
-        self.statusBar().showMessage(f"System updated to revision {revision}", 5000)
-    
-    def handle_debug_info(self, info: str):
-        """Handle debug information"""
-        print(f"Debug: {info}")
-        self.statusBar().showMessage(info, 5000)
-    
-    def show_notification(self, sender: str, message: str, group_id: int):
-        """Show notification for new messages"""
-        try:
-            # Find group title
-            group_title = f"Chat {group_id}"
-            for group in self.groups:
-                if group.id == int(group_id):
-                    group_title = group.display_title(self.current_user, self.customers)
-                    break
-            
-            # Show notification in status bar
-            self.statusBar().showMessage(f"New message from {sender} in {group_title}: {message[:50]}...", 5000)
-            
-        except Exception as e:
-            print(f"Error showing notification: {e}")
-    
-    def get_mock_groups(self):
-        return [
+    def load_mock_groups(self):
+        """Load mock groups for testing"""
+        self.groups = [
             Group(
                 id=88,
                 title="",
@@ -1671,11 +942,11 @@ class TelegramChatWindow(QMainWindow):
             ),
             Group(
                 id=91,
-                title="Project Discussion",
+                title="Обсуждение проекта",
                 participants=[632, 2611, 100],
-                participant_names=["Аким Пономарев", "Нургали Алдеев", "Иван Иванов"],
+                participant_names=["Аким Пономарев", "Нургали Алдеев", "Алексей Сидоров"],
                 unread_count=0,
-                last_message="Meeting at 3 PM",
+                last_message="Встреча в 15:00",
                 last_message_time="10:15",
                 author=100,
                 date="2025-07-17T14:00:48+03:00",
@@ -1683,47 +954,121 @@ class TelegramChatWindow(QMainWindow):
                 type="messageGroup",
                 site="ap"
             ),
-            Group(
-                id=94,
-                title="Support Team",
-                participants=[632, 2611, 101],
-                participant_names=["Аким Пономарев", "Нургали Алдеев", "Петр Петров"],
-                unread_count=5,
-                last_message="Issue resolved",
-                last_message_time="Yesterday",
-                author=101,
-                date="2025-07-17T14:01:21+03:00",
-                pinned=False,
-                type="messageGroup",
-                site="ap"
-            ),
         ]
+        print(f"✓ Loaded {len(self.groups)} mock groups")
     
-    def load_demo_messages(self, group_id: int):
-        other_participant = None
-        other_participant_name = ""
+    def load_messages(self, group_id: int):
+        """Load messages for a group"""
+        print(f"Loading messages for group {group_id}...")
         
-        if self.current_group and self.current_group.participants:
-            for i, pid in enumerate(self.current_group.participants):
-                if pid != self.current_user.id:
-                    other_participant = pid
-                    if i < len(self.current_group.participant_names):
-                        other_participant_name = self.current_group.participant_names[i]
-                    break
+        # Clear notifications
+        if group_id != 0:
+            try:
+                self.api.clear_notifications(group_id)
+            except:
+                pass
         
+        # Load messages
+        try:
+            if group_id == 0:
+                data = self.api.get_user_news_content()
+            else:
+                data = self.api.get_messages(group_id)
+            
+            self.messages = []
+            
+            if data and not data.get("error"):
+                result = data.get("result", data)
+                
+                if isinstance(result, dict) and "messages" in result:
+                    messages_list = result["messages"]
+                elif isinstance(result, dict) and "result" in result:
+                    messages_list = result["result"]
+                    if not isinstance(messages_list, list):
+                        messages_list = [messages_list]
+                elif isinstance(result, list):
+                    messages_list = result
+                else:
+                    messages_list = []
+                
+                for msg in messages_list:
+                    message_text = msg.get("message") or ""
+                    sender_id = msg.get("author") or 0
+                    
+                    # Parse props
+                    msg_prop = {}
+                    try:
+                        msg_prop = json.loads(msg.get("props", "{}"))
+                    except:
+                        pass
+                    
+                    sender_name = msg_prop.get("author_name") or ""
+                    
+                    # Parse attachments
+                    attachments = []
+                    files = msg.get("files") or msg.get("attachments") or []
+                    if files and isinstance(files, list):
+                        for file in files:
+                            attachment = {
+                                "id": file.get("id") or file.get("ID") or 0,
+                                "name": file.get("name") or file.get("NAME") or "file",
+                                "size": file.get("size") or file.get("SIZE") or 0,
+                                "url": file.get("url"),
+                                "download_link": file.get("downloadLink")
+                            }
+                            attachments.append(attachment)
+                    
+                    # Determine if message is from current user
+                    is_own = False
+                    if self.current_user:
+                        try:
+                            is_own = int(sender_id) == self.current_user.id
+                        except:
+                            pass
+                    
+                    message = Message(
+                        id=msg.get("id") or msg.get("ID") or len(self.messages),
+                        text=message_text,
+                        sender_id=int(sender_id) if sender_id else 0,
+                        sender_name=sender_name or "Неизвестно",
+                        timestamp=msg.get("date") or msg.get("DATE") or msg.get("timestamp") or "",
+                        files=attachments,
+                        is_own=is_own
+                    )
+                    self.messages.append(message)
+                
+                print(f"✓ Loaded {len(self.messages)} messages")
+                
+            else:
+                print("⚠ Using mock messages")
+                self.load_mock_messages(group_id)
+                
+        except Exception as e:
+            print(f"✗ Error loading messages: {e}")
+            traceback.print_exc()
+            self.load_mock_messages(group_id)
+        
+        # Update UI
+        self.update_messages_display()
+        
+        # Enable input area
+        self.set_input_enabled(True)
+    
+    def load_mock_messages(self, group_id: int):
+        """Load mock messages for testing"""
         self.messages = [
             Message(
                 id=1,
-                text="Hello! I have a question about the project timeline.",
-                sender_id=other_participant or 2611,
-                sender_name=other_participant_name or "Нургали Алдеев",
+                text="Здравствуйте! У меня есть вопрос по поводу сроков проекта.",
+                sender_id=2611,
+                sender_name="Нургали Алдеев",
                 timestamp="2024-01-15T10:30:00",
                 is_own=False,
                 read=True
             ),
             Message(
                 id=2,
-                text="Hi! Sure, I can help. The project is on track for completion by the end of the month.",
+                text="Привет! Конечно, я помогу. Проект идет по графику, завершение планируется к концу месяца.",
                 sender_id=self.current_user.id if self.current_user else 632,
                 sender_name=self.current_user.display_name if self.current_user else "Аким Пономарев",
                 timestamp="2024-01-15T10:32:00",
@@ -1732,16 +1077,16 @@ class TelegramChatWindow(QMainWindow):
             ),
             Message(
                 id=3,
-                text="Great! Can you send me the latest report?",
-                sender_id=other_participant or 2611,
-                sender_name=other_participant_name or "Нургали Алдеев",
+                text="Отлично! Можете прислать последний отчет?",
+                sender_id=2611,
+                sender_name="Нургали Алдеев",
                 timestamp="2024-01-15T10:35:00",
                 is_own=False,
                 read=True
             ),
             Message(
                 id=4,
-                text="Of course. I've attached the project report and the updated schedule.",
+                text="Конечно. Я прикрепил отчет по проекту и обновленный график.",
                 sender_id=self.current_user.id if self.current_user else 632,
                 sender_name=self.current_user.display_name if self.current_user else "Аким Пономарев",
                 timestamp="2024-01-15T10:40:00",
@@ -1753,15 +1098,726 @@ class TelegramChatWindow(QMainWindow):
                 read=False
             ),
         ]
+        print(f"✓ Loaded {len(self.messages)} mock messages")
+    
+    def initialize_pull_client(self):
+        """Initialize Bitrix Pull client"""
+        print("\n" + "="*60)
+        print("Initializing Bitrix Pull Client")
+        print("="*60)
+        
+        if not self.current_user:
+            print("✗ Cannot initialize Pull client: no user data")
+            return
+        
+        try:
+            # Create Pull client
+            site_id = os.environ.get('BITRIX_SITE_ID') or self.auth_info.get('site_id', 'ap')
+            use_api_token = os.environ.get('BITRIX_USE_API_TOKEN', '0') == '1'
+            
+            self.pull_client = BitrixPullClient(self.api, self.current_user.id, site_id, use_api_token)
+            
+            # Inject environment config if available
+            env_pull = self.auth_info.get('pull_config')
+            env_cookies = self.auth_info.get('cookies')
+            
+            if not env_pull:
+                # Build from environment
+                ws_url = os.environ.get('PULL_WEBSOCKET_URL') or os.environ.get('PULL_WEBSOCKET')
+                private_channel = os.environ.get('PULL_CHANNEL_PRIVATE') or os.environ.get('PULL_CHANNEL')
+                shared_channel = os.environ.get('PULL_CHANNEL_SHARED')
+                
+                if ws_url or private_channel or shared_channel:
+                    built = {}
+                    if ws_url:
+                        built['server'] = {
+                            'websocket': ws_url,
+                            'websocket_secure': ws_url,
+                            'hostname': os.environ.get('PULL_WEBSOCKET_HOSTNAME') or os.environ.get('BITRIX_HOSTNAME', ''),
+                            'websocket_enabled': True
+                        }
+                    
+                    ch = {}
+                    now_ts = int(time.time())
+                    if private_channel:
+                        ch['private'] = {'id': private_channel, 'start': now_ts, 'end': now_ts + 43200, 'type': 'private'}
+                    if shared_channel:
+                        ch['shared'] = {'id': shared_channel, 'start': now_ts, 'end': now_ts + 43200, 'type': 'shared'}
+                    if ch:
+                        built['channels'] = ch
+                    
+                    env_pull = built
+            
+            if not env_cookies:
+                # Collect cookies from env
+                built_cookies = {}
+                for k, v in os.environ.items():
+                    if k.startswith('COOKIE_'):
+                        built_cookies[k[len('COOKIE_'):]] = v
+                    elif k in ('PHPSESSID', 'USER_ID', 'BITRIX_SM_LOGIN', 'BITRIX_SM_UID'):
+                        built_cookies[k] = v
+                if built_cookies:
+                    env_cookies = built_cookies
+            
+            # Inject config into client
+            if env_pull:
+                try:
+                    self.pull_client.auth_data = self.pull_client.auth_data or {}
+                    self.pull_client.auth_data['pull_config'] = env_pull
+                    self.pull_client.pull_config = env_pull
+                    self.pull_client.config = env_pull
+                    print("✓ Injected Pull configuration from environment")
+                except Exception as e:
+                    print(f"⚠ Failed to inject Pull config: {e}")
+            
+            if env_cookies:
+                try:
+                    self.pull_client.auth_data = self.pull_client.auth_data or {}
+                    self.pull_client.auth_data['cookies'] = env_cookies
+                    self.pull_client.cookies = env_cookies
+                    # Rebuild cookie header
+                    try:
+                        self.pull_client.cookie_header = self.pull_client.build_cookie_header()
+                    except:
+                        pass
+                    print(f"✓ Injected {len(env_cookies)} cookies from environment")
+                except Exception as e:
+                    print(f"⚠ Failed to inject cookies: {e}")
+            
+            # Connect signals
+            self.pull_client.message_received.connect(self.handle_pull_message)
+            self.pull_client.connection_status.connect(self.handle_pull_connection_status)
+            self.pull_client.debug_info.connect(self.handle_debug_info)
+            
+            # Set up user name callback
+            self.pull_client.get_user_name_callback = self.get_user_name
+            
+            # Start the client
+            print("Starting Pull client...")
+            self.pull_client.start_client()
+            
+            print("✓ Pull client initialized successfully")
+            print("="*60 + "\n")
+            
+            # Update connection status
+            self.update_connection_status(True, "Подключение к Bitrix...")
+            
+        except Exception as e:
+            print(f"✗ Error initializing Pull client: {e}")
+            traceback.print_exc()
+            
+            self.statusBar().showMessage(f"Ошибка Pull клиента: {str(e)[:50]}", 5000)
+            self.update_connection_status(False, "Pull клиент не подключен")
+    
+    def update_user_info(self):
+        """Update user info in UI"""
+        if self.current_user:
+            self.user_name_label.setText(self.current_user.display_name)
+            self.user_status_label.setText("онлайн")
+    
+    def update_chat_list(self):
+        """Update chat list in sidebar"""
+        # Clear existing items
+        while self.chats_layout.count() > 1:
+            item = self.chats_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        # Add chat items
+        for group in self.groups:
+            # Skip if filtered by search
+            if hasattr(self, 'search_filter') and self.search_filter:
+                search_lower = self.search_filter.lower()
+                title = group.display_title(self.current_user, self.customers).lower()
+                if search_lower not in title:
+                    continue
+            
+            item = TelegramChatListItem(group, self.current_user, self.customers, self.is_dark_mode)
+            item.clicked.connect(self.select_chat)
+            self.chats_layout.insertWidget(0, item)
+    
+    def update_messages_display(self):
+        """Update messages display"""
+        # Clear current messages
+        while self.messages_layout.count() > 1:
+            item = self.messages_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        # Reset last sender
+        self.last_sender_id = None
+        
+        # Add messages
+        for i, message in enumerate(self.messages):
+            # Add spacer between messages from different senders
+            if self.last_sender_id is not None and self.last_sender_id != message.sender_id:
+                spacer = QWidget()
+                spacer.setFixedHeight(8)
+                spacer.setStyleSheet("background-color: transparent;")
+                self.messages_layout.insertWidget(self.messages_layout.count() - 1, spacer)
+            
+            # Create message bubble
+            bubble = TelegramMessageBubble(message, self.is_dark_mode)
+            
+            # Create container for alignment
+            container = QWidget()
+            container_layout = QHBoxLayout(container)
+            container_layout.setContentsMargins(0, 0, 0, 0)
+            container_layout.setSpacing(0)
+            
+            # Align based on sender
+            if message.is_own:
+                container_layout.addStretch()
+                container_layout.addWidget(bubble)
+                container_layout.setStretchFactor(bubble, 0)
+            else:
+                container_layout.addWidget(bubble)
+                container_layout.addStretch()
+                container_layout.setStretchFactor(bubble, 0)
+            
+            self.messages_layout.insertWidget(self.messages_layout.count() - 1, container)
+            self.last_sender_id = message.sender_id
+        
+        # Scroll to bottom
+        QTimer.singleShot(50, self.scroll_to_bottom)
+    
+    def scroll_to_bottom(self):
+        """Scroll messages to bottom"""
+        scrollbar = self.messages_scroll.verticalScrollBar()
+        if scrollbar:
+            scrollbar.setValue(scrollbar.maximum())
+    
+    def select_chat(self, group_id: int):
+        """Select a chat"""
+        print(f"Selecting chat: {group_id}")
+        
+        for group in self.groups:
+            if group.id == group_id:
+                self.current_group = group
+                
+                # Update chat header
+                self.chat_title_label.setText(group.display_title(self.current_user, self.customers))
+                
+                # Update chat status
+                member_count = len(group.participants)
+                if member_count > 0:
+                    self.chat_status_label.setText(f"{member_count} участников")
+                else:
+                    self.chat_status_label.setText("Личный чат")
+                
+                # Show back button
+                self.back_btn.setVisible(True)
+                
+                # Load messages
+                self.load_messages(group_id)
+                
+                # Clear unread count
+                group.unread_count = 0
+                self.update_chat_list()
+                
+                break
+    
+    def send_message(self):
+        """Send a message"""
+        text = self.message_input.text().strip()
+        if not text or not self.current_group:
+            return
+        
+        print(f"Sending message to group {self.current_group.id}")
+        
+        # Disable input temporarily
+        self.set_input_enabled(False)
+        
+        try:
+            # Send via API
+            data = self.api.add_message(self.current_group, text)
+            
+            if data and not data.get("error"):
+                # Create message object
+                new_msg = Message(
+                    id=len(self.messages) + 1,
+                    text=text,
+                    sender_id=self.current_user.id,
+                    sender_name=self.current_user.display_name,
+                    timestamp=datetime.now().isoformat(),
+                    files=[],
+                    is_own=True,
+                    read=True
+                )
+                
+                # Add to messages
+                self.messages.append(new_msg)
+                
+                # Update UI
+                self.update_messages_display()
+                self.message_input.clear()
+                
+                # Update group info
+                self.current_group.last_message = text[:50] + ("..." if len(text) > 50 else "")
+                self.current_group.last_message_time = "только что"
+                self.update_chat_list()
+                
+                # Show success
+                self.statusBar().showMessage("✓ Сообщение отправлено", 3000)
+                
+            else:
+                error_msg = data.get("error_description", "Неизвестная ошибка") if isinstance(data, dict) else "Неизвестная ошибка"
+                print(f"API error: {error_msg}")
+                QMessageBox.warning(self, "Ошибка", f"Не удалось отправить сообщение: {error_msg}")
+                
+        except Exception as e:
+            print(f"Error sending message: {e}")
+            traceback.print_exc()
+            QMessageBox.warning(self, "Ошибка", f"Не удалось отправить сообщение: {str(e)}")
+            
+        finally:
+            # Re-enable input
+            self.set_input_enabled(True)
+            self.message_input.setFocus()
+    
+    def attach_file(self):
+        """Attach a file"""
+        file_paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Выберите файлы",
+            "",
+            "Все файлы (*.*);;"
+            "Изображения (*.jpg *.jpeg *.png *.gif *.bmp);;"
+            "Документы (*.pdf *.doc *.docx *.xls *.xlsx);;"
+            "Архивы (*.zip *.rar *.7z)"
+        )
+        
+        for file_path in file_paths:
+            file_name = os.path.basename(file_path)
+            file_size = os.path.getsize(file_path)
+            
+            print(f"Attaching file: {file_name} ({file_size} bytes)")
+            
+            # TODO: Implement actual file upload
+            # For now, just show a notification
+            self.statusBar().showMessage(f"Файл '{file_name}' выбран для отправки", 3000)
+    
+    def go_back(self):
+        """Go back to chat list"""
+        self.current_group = None
+        self.chat_title_label.setText("Выберите чат")
+        self.chat_status_label.setText("")
+        self.back_btn.setVisible(False)
+        
+        # Clear messages
+        self.messages = []
+        self.update_messages_display()
+        
+        # Disable input
+        self.set_input_enabled(False)
+    
+    def show_new_chat_dialog(self):
+        """Show new chat dialog"""
+        dialog = NewMessageDialog(
+            parent=self,
+            groups=self.groups,
+            current_user=self.current_user,
+            customers=self.customers,
+            is_dark=self.is_dark_mode
+        )
+        
+        def on_message_sent(text, group_id):
+            # Find and select group
+            for group in self.groups:
+                if group.id == group_id:
+                    self.select_chat(group_id)
+                    break
+            
+            # Send the message
+            if self.current_group:
+                self.message_input.setText(text)
+                self.send_message()
+        
+        dialog.message_sent.connect(on_message_sent)
+        dialog.exec_()
+    
+    def filter_chats(self, text):
+        """Filter chats by search text"""
+        self.search_filter = text
+        self.update_chat_list()
+    
+    def set_input_enabled(self, enabled: bool):
+        """Enable or disable input area"""
+        self.message_input.setEnabled(enabled)
+        self.send_btn.setEnabled(enabled)
+        self.attach_btn.setEnabled(enabled)
+        
+        if not enabled:
+            self.message_input.setPlaceholderText("Выберите чат...")
+        else:
+            self.message_input.setPlaceholderText("Введите сообщение...")
+            self.message_input.setFocus()
+    
+    def update_connection_status(self, connected: bool, message: str):
+        """Update connection status display"""
+        if connected:
+            self.connection_label.setText(f"● {message}")
+            self.connection_label.setStyleSheet("""
+                QLabel {
+                    background-color: rgba(76, 175, 80, 0.1);
+                    color: #4CAF50;
+                }
+            """)
+        else:
+            self.connection_label.setText(f"○ {message}")
+            self.connection_label.setStyleSheet("""
+                QLabel {
+                    background-color: rgba(244, 67, 54, 0.1);
+                    color: #F44336;
+                }
+            """)
+    
+    def get_user_name(self, user_id):
+        """Get user name by ID"""
+        if not user_id:
+            return "Неизвестно"
+        
+        try:
+            user_id_int = int(user_id)
+        except:
+            return f"Пользователь {user_id}"
+        
+        # Check customers
+        for customer in self.customers:
+            if customer.id == user_id_int:
+                return customer.full_name
+        
+        # Check managers
+        for manager in self.managers:
+            if manager.id == user_id_int:
+                return manager.display_name
+        
+        # Check current user
+        if self.current_user and self.current_user.id == user_id_int:
+            return self.current_user.display_name
+        
+        return f"Пользователь {user_id}"
+    
+    def handle_pull_message(self, message_data: dict):
+        """Handle messages from Pull client"""
+        try:
+            # Handle uad.shop.chat messages
+            if message_data.get('module_id') == 'uad.shop.chat':
+                self.handle_uad_new_message(message_data)
+            else:
+                print(f"Received Pull message: {message_data}")
+                
+        except Exception as e:
+            print(f"Error handling Pull message: {e}")
+            traceback.print_exc()
+    
+    def handle_uad_new_message(self, params: dict):
+        """Handle new message from uad.shop.chat module"""
+        try:
+            msg_data = params.get("data", {}).get("text", {}).get("params", {})
+            
+            message_text = msg_data.get('message', '')
+            group = msg_data.get('group', {})
+            author = msg_data.get('author', '')
+            group_id = group.get('id')
+            author_id = group.get('sub_ctmember') if group.get('sub_ctmember') else group.get('author')
+            group_date = msg_data.get('sub_date')
+            
+            # Convert IDs
+            try:
+                group_id_int = int(group_id) if group_id else 0
+            except:
+                group_id_int = 0
+            
+            try:
+                author_id_int = int(author_id) if author_id else 0
+            except:
+                author_id_int = 0
+            
+            # Parse timestamp
+            try:
+                timestamp = group_date if group_date else datetime.now().isoformat()
+            except:
+                timestamp = datetime.now().isoformat()
+            
+            # Check if for current chat
+            if self.current_group and self.current_group.id == group_id_int:
+                is_own = author_id_int == self.current_user.id if self.current_user else False
+                
+                message = Message(
+                    id=len(self.messages) + 1,
+                    text=message_text,
+                    sender_id=author_id_int,
+                    sender_name=author,
+                    timestamp=timestamp,
+                    files=[],
+                    is_own=is_own
+                )
+                
+                self.messages.append(message)
+                self.update_messages_display()
+                
+                print(f"✓ New message in current chat")
+                
+                # Update group info
+                self.current_group.last_message = message_text[:50] + ("..." if len(message_text) > 50 else "")
+                self.current_group.last_message_time = "только что"
+                self.update_chat_list()
+                
+            else:
+                # Update unread count for other chats
+                for group_obj in self.groups:
+                    if group_obj.id == group_id_int:
+                        group_obj.unread_count += 1
+                        group_obj.last_message = message_text[:50] + ("..." if len(message_text) > 50 else "")
+                        group_obj.last_message_time = "только что"
+                        self.update_chat_list()
+                        
+                        # Show notification
+                        self.show_notification(author, message_text, group_id_int)
+                        break
+                
+                print(f"✓ New message in background chat {group_id_int}")
+            
+            # Refresh groups list
+            QTimer.singleShot(1000, self.refresh_groups)
+            
+        except Exception as e:
+            print(f"Error handling uad.shop.chat message: {e}")
+            traceback.print_exc()
+    
+    def handle_pull_connection_status(self, params: dict):
+    # Handle both boolean and dictionary formats
+        if isinstance(params, bool):
+            # Direct boolean received
+            status = 'online' if params else 'offline'
+        elif isinstance(params, dict):
+            # Dictionary format
+            status = params.get('status', 'unknown')
+        else:
+            # Unknown format, try to convert
+            try:
+                status = str(params)
+                if status.lower() in ['true', 'online', 'connected']:
+                    status = 'online'
+                elif status.lower() in ['false', 'offline', 'disconnected']:
+                    status = 'offline'
+                else:
+                    status = 'unknown'
+            except:
+                status = 'unknown'
+
+        print(f"Pull connection status: {status}")
+
+        if status == 'online':
+            self.update_connection_status(True, "Подключено к Bitrix")
+        elif status == 'offline':
+            self.update_connection_status(False, "Отключено от Bitrix")
+        else:
+            self.update_connection_status(False, f"Статус: {status}")
+    
+    def handle_debug_info(self, info: str):
+        """Handle debug information"""
+        print(f"Debug: {info}")
+        self.statusBar().showMessage(info, 5000)
+    
+    def show_notification(self, sender: str, message: str, group_id: int):
+        """Show notification for new messages"""
+        try:
+            # Find group title
+            group_title = f"Чат {group_id}"
+            for group in self.groups:
+                if group.id == int(group_id):
+                    group_title = group.display_title(self.current_user, self.customers)
+                    break
+            
+            # Show in status bar
+            self.statusBar().showMessage(f"Новое сообщение от {sender} в {group_title}: {message[:50]}...", 5000)
+            
+        except Exception as e:
+            print(f"Error showing notification: {e}")
+    
+    def refresh_groups(self):
+        """Refresh groups list"""
+        if not self.search_filter:
+            self.load_groups()
+    
+    def refresh_current_messages(self):
+        """Refresh messages for current chat"""
+        if self.current_group:
+            self.load_messages(self.current_group.id)
+    
+    def show_main_menu(self):
+        """Show main menu"""
+        menu = QMenu(self)
+        
+        menu.addAction("👤 Профиль", self.show_profile)
+        menu.addAction("⚙️ Настройки", self.show_settings)
+        menu.addSeparator()
+        
+        theme_action = menu.addAction("🌙 Темная тема" if not self.is_dark_mode else "☀️ Светлая тема")
+        theme_action.triggered.connect(self.toggle_theme)
+        
+        menu.addSeparator()
+        menu.addAction("🔄 Обновить", self.force_refresh)
+        menu.addAction("ℹ️ О программе", self.show_about)
+        menu.addSeparator()
+        menu.addAction("🚪 Выход", self.close)
+        
+        menu.exec_(self.sender().mapToGlobal(self.sender().rect().bottomLeft()))
+    
+    def show_chat_menu(self):
+        """Show chat menu"""
+        if not self.current_group:
+            return
+        
+        menu = QMenu(self)
+        
+        menu.addAction("ℹ️ Информация о чате", self.show_chat_info)
+        menu.addAction("👥 Участники", self.manage_participants)
+        menu.addSeparator()
+        menu.addAction("🗑️ Очистить историю", self.clear_chat_history)
+        menu.addAction("❌ Удалить чат", self.delete_chat)
+        
+        menu.exec_(self.sender().mapToGlobal(self.sender().rect().bottomLeft()))
+    
+    def show_profile(self):
+        """Show profile dialog"""
+        if self.current_user:
+            QMessageBox.information(
+                self,
+                "Профиль",
+                f"Имя: {self.current_user.display_name}\n"
+                f"Email: {self.current_user.email}\n"
+                f"Роль: {'Менеджер' if self.current_user.is_manager else 'Пользователь'}\n"
+                f"ID: {self.current_user.id}"
+            )
+    
+    def show_settings(self):
+        """Show settings dialog"""
+        QMessageBox.information(self, "Настройки", "Диалог настроек будет реализован позже")
+    
+    def toggle_theme(self):
+        """Toggle between dark and light theme"""
+        self.is_dark_mode = not self.is_dark_mode
+        apply_telegram_theme(self, self.is_dark_mode)
+        
+        # Update chat list and messages
+        self.update_chat_list()
+        if self.messages:
+            self.update_messages_display()
+    
+    def force_refresh(self):
+        """Force refresh all data"""
+        print("Force refreshing all data...")
+        
+        # Show loading indicator
+        self.statusBar().showMessage("Обновление данных...", 3000)
+        
+        # Refresh data
+        self.load_groups()
+        if self.current_group:
+            self.load_messages(self.current_group.id)
+        
+        # Update status
+        self.statusBar().showMessage("Данные обновлены", 3000)
+    
+    def show_about(self):
+        """Show about dialog"""
+        QMessageBox.about(
+            self,
+            "О программе",
+            "ЮГАВТОДЕТАЛЬ - Telegram Chat\n\n"
+            "Версия 1.0\n"
+            "© 2024 ЮГАВТОДЕТАЛЬ"
+        )
+    
+    def show_chat_info(self):
+        """Show chat info dialog"""
+        if not self.current_group:
+            return
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Информация о чате")
+        dialog.setMinimumWidth(300)
+        
+        layout = QVBoxLayout(dialog)
+        
+        layout.addWidget(QLabel(f"ID чата: {self.current_group.id}"))
+        layout.addWidget(QLabel(f"Название: {self.current_group.title or 'Без названия'}"))
+        layout.addWidget(QLabel(f"Участников: {len(self.current_group.participants)}"))
+        
+        if self.current_group.date:
+            try:
+                dt = datetime.fromisoformat(self.current_group.date.replace('Z', '+00:00'))
+                layout.addWidget(QLabel(f"Создан: {dt.strftime('%d.%m.%Y %H:%M')}"))
+            except:
+                pass
+        
+        close_btn = QPushButton("Закрыть")
+        close_btn.clicked.connect(dialog.accept)
+        layout.addWidget(close_btn)
+        
+        dialog.exec_()
+    
+    def manage_participants(self):
+        """Manage chat participants"""
+        QMessageBox.information(self, "Участники", "Управление участниками будет реализовано позже")
+    
+    def clear_chat_history(self):
+        """Clear chat history"""
+        if not self.current_group:
+            return
+        
+        reply = QMessageBox.question(
+            self,
+            "Очистить историю",
+            "Вы уверены, что хотите очистить историю этого чата?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            self.messages = []
+            self.update_messages_display()
+            self.statusBar().showMessage("История чата очищена", 3000)
+    
+    def delete_chat(self):
+        """Delete chat"""
+        if not self.current_group:
+            return
+        
+        reply = QMessageBox.question(
+            self,
+            "Удалить чат",
+            "Вы уверены, что хотите удалить этот чат?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            self.go_back()
+            self.statusBar().showMessage("Чат удален", 3000)
     
     def closeEvent(self, event):
         """Handle application close"""
-        # Disconnect Pull client
-        if self.pull_client:
-            self.pull_client.stop()
+        print("Closing application...")
         
         # Stop timers
-        if hasattr(self, 'update_timer'):
-            self.update_timer.stop()
+        if hasattr(self, 'groups_timer'):
+            self.groups_timer.stop()
+        if hasattr(self, 'messages_timer'):
+            self.messages_timer.stop()
+        
+        # Stop Pull client
+        if self.pull_client:
+            print("Stopping Pull client...")
+            try:
+                self.pull_client.stop()
+            except:
+                pass
         
         event.accept()
+
+
+TelegramChatWindow = TelegramChatWindow

@@ -1,21 +1,21 @@
 """
-Modern dialog for composing new messages
+Telegram-style new message dialog
 """
 
 from PyQt5.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit,
-    QPushButton, QComboBox, QMessageBox, QFrame
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
+    QListWidget, QListWidgetItem, QLineEdit, 
+    QPushButton, QScrollArea, QWidget
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont
 
-from src.api.models import User, Customer, Group
 from .themes import get_theme_colors
 
 class NewMessageDialog(QDialog):
-    """Modern new message compose dialog"""
+    """Telegram-style dialog for starting new chat"""
     
-    message_sent = pyqtSignal(str, int)  # text, group_id
+    message_sent = pyqtSignal(str, int)
     
     def __init__(self, parent=None, groups=None, current_user=None, customers=None, is_dark=False):
         super().__init__(parent)
@@ -24,185 +24,119 @@ class NewMessageDialog(QDialog):
         self.customers = customers or []
         self.is_dark = is_dark
         self.colors = get_theme_colors(is_dark)
-        self.selected_group_id = None
         
-        self.setWindowTitle("New Message")
-        self.setGeometry(100, 100, 500, 400)
         self.setup_ui()
-        self.apply_theme()
+        self.apply_style()
     
     def setup_ui(self):
-        """Setup modern UI"""
+        self.setWindowTitle("New Message")
+        self.setMinimumSize(400, 500)
+        
         layout = QVBoxLayout(self)
-        layout.setSpacing(16)
-        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
         
         # Header
-        header = QLabel("Compose Message")
-        header_font = QFont()
-        header_font.setPointSize(16)
-        header_font.setBold(True)
-        header.setFont(header_font)
+        header = QWidget()
+        header.setFixedHeight(56)
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(16, 12, 16, 12)
+        
+        title_label = QLabel("New Message")
+        title_font = QFont()
+        title_font.setPointSize(16)
+        title_font.setWeight(QFont.Bold)
+        title_label.setFont(title_font)
+        header_layout.addWidget(title_label)
+        
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(32, 32)
+        close_btn.clicked.connect(self.reject)
+        header_layout.addWidget(close_btn)
+        
         layout.addWidget(header)
         
-        # Chat selection
-        chat_layout = QHBoxLayout()
-        chat_label = QLabel("Select Chat:")
-        chat_label.setStyleSheet(f"font-weight: 600; color: {self.colors['ON_SURFACE']};")
-        chat_layout.addWidget(chat_label)
-        
-        self.chat_combo = QComboBox()
-        self.chat_combo.setMinimumHeight(40)
-        self.chat_combo.setStyleSheet(f"""
-            QComboBox {{
-                background-color: {self.colors['SURFACE']};
-                border: 2px solid {self.colors['BORDER']};
-                border-radius: 8px;
-                padding: 8px 12px;
-                font-size: 13px;
-                color: {self.colors['ON_SURFACE']};
-            }}
-            QComboBox:focus {{
-                border: 2px solid {self.colors['PRIMARY']};
-            }}
-            QComboBox::drop-down {{
+        # Search
+        search_input = QLineEdit()
+        search_input.setPlaceholderText("Search contacts...")
+        search_input.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: {self.colors['SURFACE_VARIANT']};
                 border: none;
-            }}
-            QComboBox::down-arrow {{
-                image: none;
-            }}
-        """)
-        
-        # Populate with groups
-        for group in self.groups:
-            display_name = group.display_title(self.current_user, self.customers)
-            self.chat_combo.addItem(display_name, group.id)
-        
-        chat_layout.addWidget(self.chat_combo, 1)
-        layout.addLayout(chat_layout)
-        
-        # Message input
-        msg_label = QLabel("Message:")
-        msg_label.setStyleSheet(f"font-weight: 600; color: {self.colors['ON_SURFACE']};")
-        layout.addWidget(msg_label)
-        
-        self.message_input = QTextEdit()
-        self.message_input.setPlaceholderText("Type your message here...")
-        self.message_input.setMinimumHeight(150)
-        self.message_input.setStyleSheet(f"""
-            QTextEdit {{
-                background-color: {self.colors['SURFACE']};
-                border: 2px solid {self.colors['BORDER']};
-                border-radius: 12px;
-                padding: 12px;
+                border-radius: 8px;
+                padding: 12px 16px;
+                margin: 8px 16px;
                 font-size: 14px;
                 color: {self.colors['ON_SURFACE']};
-                selection-background-color: {self.colors['PRIMARY']};
-            }}
-            QTextEdit:focus {{
-                border: 2px solid {self.colors['PRIMARY']};
             }}
         """)
-        layout.addWidget(self.message_input)
+        layout.addWidget(search_input)
         
-        # Character count
-        self.char_count_label = QLabel("0 characters")
-        self.char_count_label.setStyleSheet(f"color: {self.colors['ON_SURFACE_VARIANT']}; font-size: 12px;")
-        self.message_input.textChanged.connect(self.update_char_count)
-        layout.addWidget(self.char_count_label)
-        
-        layout.addSpacing(8)
-        
-        # Buttons
-        button_layout = QHBoxLayout()
-        button_layout.addStretch()
-        
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.setMinimumHeight(40)
-        cancel_btn.setMinimumWidth(120)
-        cancel_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {self.colors['SURFACE_VARIANT']};
-                border: 1px solid {self.colors['BORDER']};
-                border-radius: 8px;
-                padding: 8px 16px;
-                font-size: 13px;
-                font-weight: 600;
-                color: {self.colors['ON_SURFACE']};
-            }}
-            QPushButton:hover {{
-                background-color: {self.colors['BORDER']};
-            }}
-            QPushButton:pressed {{
-                background-color: {self.colors['BORDER']};
-            }}
-        """)
-        cancel_btn.clicked.connect(self.reject)
-        button_layout.addWidget(cancel_btn)
-        
-        send_btn = QPushButton("Send Message")
-        send_btn.setMinimumHeight(40)
-        send_btn.setMinimumWidth(140)
-        send_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {self.colors['PRIMARY']};
+        # Contacts list
+        self.contacts_list = QListWidget()
+        self.contacts_list.setStyleSheet(f"""
+            QListWidget {{
+                background-color: {self.colors['SURFACE']};
                 border: none;
-                border-radius: 8px;
-                padding: 8px 16px;
-                font-size: 13px;
-                font-weight: 600;
-                color: white;
+                font-size: 14px;
             }}
-            QPushButton:hover {{
-                background-color: {self.colors['PRIMARY_DARK']};
+            QListWidget::item {{
+                padding: 12px 16px;
+                border-bottom: 1px solid {self.colors['BORDER']};
             }}
-            QPushButton:pressed {{
-                background-color: {self.colors['PRIMARY_DARK']};
+            QListWidget::item:selected {{
+                background-color: {self.colors['HIGHLIGHT']};
             }}
         """)
+        
+        # Add contacts
+        for customer in self.customers[:10]:  # Limit to first 10
+            item = QListWidgetItem(customer.full_name)
+            item.setData(Qt.UserRole, customer.id)
+            self.contacts_list.addItem(item)
+        
+        layout.addWidget(self.contacts_list, 1)
+        
+        # Message input
+        input_widget = QWidget()
+        input_layout = QHBoxLayout(input_widget)
+        input_layout.setContentsMargins(16, 8, 16, 16)
+        
+        self.message_input = QLineEdit()
+        self.message_input.setPlaceholderText("Type a message...")
+        input_layout.addWidget(self.message_input, 1)
+        
+        send_btn = QPushButton("Send")
+        send_btn.setFixedWidth(80)
         send_btn.clicked.connect(self.send_message)
-        button_layout.addWidget(send_btn)
+        input_layout.addWidget(send_btn)
         
-        layout.addLayout(button_layout)
+        layout.addWidget(input_widget)
     
-    def update_char_count(self):
-        """Update character count label"""
-        text_len = len(self.message_input.toPlainText())
-        self.char_count_label.setText(f"{text_len} characters")
-    
-    def send_message(self):
-        """Send the message"""
-        text = self.message_input.toPlainText().strip()
-        
-        if not text:
-            QMessageBox.warning(
-                self,
-                "Empty Message",
-                "Please enter a message before sending.",
-                QMessageBox.Ok
-            )
-            return
-        
-        if self.chat_combo.currentIndex() >= 0:
-            group_id = self.chat_combo.currentData()
-            self.message_sent.emit(text, group_id)
-            self.accept()
-        else:
-            QMessageBox.warning(
-                self,
-                "No Chat Selected",
-                "Please select a chat first.",
-                QMessageBox.Ok
-            )
-    
-    def apply_theme(self):
-        """Apply theme to dialog"""
+    def apply_style(self):
         self.setStyleSheet(f"""
             QDialog {{
                 background-color: {self.colors['SURFACE']};
-                color: {self.colors['ON_SURFACE']};
+                border: 1px solid {self.colors['BORDER']};
+                border-radius: 12px;
             }}
             QLabel {{
                 color: {self.colors['ON_SURFACE']};
             }}
         """)
+    
+    def send_message(self):
+        message = self.message_input.text().strip()
+        if not message:
+            return
+        
+        selected_items = self.contacts_list.selectedItems()
+        if not selected_items:
+            return
+        
+        # Get selected contact
+        contact_item = selected_items[0]
+        contact_id = contact_item.data(Qt.UserRole)
+        
+        self.message_sent.emit(message, contact_id)
+        self.accept()

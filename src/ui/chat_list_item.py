@@ -2,14 +2,16 @@
 Chat list item widget for sidebar with modern design
 """
 
-from PyQt5.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QMouseEvent
+from PyQt5.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QFrame
+from PyQt5.QtCore import Qt, pyqtSignal, QSize
+from PyQt5.QtGui import QFont, QMouseEvent, QPainter, QPainterPath, QColor
 
 from src.api.models import Group, User, Customer
 from .themes import get_theme_colors
 
-class ChatListItem(QWidget):
+class TelegramChatListItem(QWidget):
+    """Telegram-style chat list item with modern design"""
+    
     clicked = pyqtSignal(int)
     
     def __init__(self, group: Group, current_user: User, customers: list, is_dark=False):
@@ -133,3 +135,10 @@ class ChatListItem(QWidget):
     
     def leaveEvent(self, event):
         self.apply_style()
+
+
+# Backward compatibility - Define ChatListItem as an alias for TelegramChatListItem
+ChatListItem = TelegramChatListItem
+
+# Explicitly export both names
+__all__ = ['TelegramChatListItem', 'ChatListItem']
